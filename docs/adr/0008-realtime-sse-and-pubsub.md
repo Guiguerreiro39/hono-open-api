@@ -1,0 +1,21 @@
+---
+status: accepted
+---
+
+# Realtime SSE streaming, PubSub adapter, and browser auth
+
+We replace the singleton `EventEmitter` and `src/lib/realtime/` helpers with a `Core` `PubSubPort` (`src/core/ports/pubsub.ts`) and SSE helpers (`src/core/realtime/sse.ts`), backed in `Infra` (`src/infra/realtime/`) by `MemoryPubSubAdapter` (dev/test fallback) and `RedisPubSubAdapter` (`REDIS_URL`-enabled multi-instance fan-out over dedicated ref-counted `pub`/`sub` `ioredis` connections with fail-open `publish()`), retire unsafe `?token=` query auth in favor of Better Auth `HttpOnly` cookies (`EventSource(..., { withCredentials: true })`) and `fetch()` + `eventsource-parser` Bearer clients, emit distinct `init`/`update`/`ping`/`error` SSE events without `Last-Event-ID` replay, and enforce pre-header `MAX_SSE_CONNECTIONS` (`503`) and shutdown `AbortSignal` cleanup.
+
+## Considered Options
+
+- **Keep `?token=` query authentication or add a `POST /api/v1/auth/sse-ticket` endpoint**: Rejected because passing bearer tokens in query strings violates RFC 6750 §2.3 and already `401`s against `requireAuth`, while a single-use ticket endpoint adds stateful atomic-consume infrastructure and breaks native `EventSource` automatic reconnection to the same URL when `HttpOnly` cookies + `fetch()`/`eventsource-parser` handle browser auth without extra endpoints.
+- **Add a Redis Stream / ring buffer for `Last-Event-ID` replay or push raw deltas only**: Rejected because live-query reconnects already re-sync cleanly via a fresh `init` snapshot (`retry: 3000`), avoiding bounded replay memory/TTL state in Redis, while keeping `createEventStream` alongside `createLiveQueryStream` supports future modules needing direct `PubSubPort` delta delivery without per-subscriber DB queries.
+- **Subscribe via Redis `PSUBSCRIBE` wildcards (`tasks:*`) or fail closed on `publish()` errors**: Rejected because explicit dual-publishing to `<feature>:<userId>` and `<feature>:all` avoids Redis pattern-matching overhead across namespaces, and failing open on transient Redis `publish()` errors prevents `500` responses after DB mutations have already committed.
+- **Track cross-instance SSE connection counts in Redis or open `streamSSE` before checking capacity/subscriptions**: Rejected because pod crashes leak distributed Redis counters, whereas checking per-process `MAX_SSE_CONNECTIONS` and awaiting `pubsub.subscribe(...)` before `streamSSE` eliminates init-vs-subscribe race windows and returns clean ADR-0002 `503` JSON errors prior to flushing `200 text/event-stream` headers.
+
+## Consequences
+
+- `src/core/ports/pubsub.ts` defines async `PubSubPort` (`publish`, `subscribe`, `ping?`, `close`) and `RealtimeEvent`; `src/core/realtime/sse.ts` exports `createLiveQueryStream` (coalescing overlapping pubsub ticks via an `inFlight`/`pending` trailing refetch) and `createEventStream`, emitting `init`, `update`, `ping` (`15_000ms` heartbeat), and sanitized ADR-0002 `{ error: { code, message, requestId } }` events while integrating `MetricsPort` (`incSseConnection`/`decSseConnection`), shutdown `AbortSignal`, and ADR-0002 `timeout()` exemption.
+- `src/infra/realtime/` provides `MemoryPubSubAdapter` (`setMaxListeners(0)`, `clear()`, `listenerCount(topic)` for tests) and `RedisPubSubAdapter` (dedicated `pub` + `sub = pub.duplicate()` with `"error"` handlers, `0 <-> 1` ref-counted `SUBSCRIBE`/`UNSUBSCRIBE`, `setMaxListeners(0)`, `${CACHE_PREFIX}:pubsub:<topic>` channels, fail-open `publish` logging `warn`), wired into `PlatformDeps` in `createContainer(env)` so both API handlers and `src/worker.ts` jobs can publish events.
+- `src/env.ts` adds `MAX_SSE_CONNECTIONS` (default `1000`, `0` = unlimited); `src/modules/tasks/` updates `GET /api/v1/tasks/live` to reuse `ListTasksQuerySchema` (`limit` default `50`, max `100`, `cursor`, `?scope=all`/`?userId=` via `tasks:read:any`), declare `[{ bearerAuth: [] }, { cookieAuth: [] }]` security and `401`/`403`/`422`/`429`/`503` responses, and dual-publish `tasks:<userId>` + `tasks:all`.
+- `src/lib/realtime/client-example.ts` is removed from `src/` (avoiding backend `eventsource-parser` dependencies), with cookie `EventSource` and `fetch()`/`eventsource-parser` client patterns documented in `docs/`.
