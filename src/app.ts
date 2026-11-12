@@ -14,6 +14,7 @@ import { createHttpLogger } from "@/core/logger";
 import { metricsMiddleware } from "@/core/observability/metrics";
 import { traceContext } from "@/core/observability/trace";
 import { createOpenAPIDocumentConfig, registerOpenAPISecuritySchemes } from "@/core/openapi";
+import { createApiRateLimiter, createAuthRateLimiter } from "@/core/rate-limit";
 import { createAuthModule } from "@/modules/auth/auth.index";
 import { createSystemModule } from "@/modules/system/system.index";
 
@@ -74,10 +75,14 @@ export function createApp(deps: PlatformDeps) {
           ],
         }),
       )
+      .use("/api/auth/*", createAuthRateLimiter(deps))
       .on(["POST", "GET"], "/api/auth/*", c => deps.auth.handler(c.req.raw)),
   );
 
-  const apiV1 = createRouter()
+  const apiV1 = $(
+    createRouter()
+      .use("*", createApiRateLimiter(deps)),
+  )
     .route("/", createAuthModule(deps));
 
   return withDocsAndAuth

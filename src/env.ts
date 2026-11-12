@@ -10,12 +10,23 @@ const LogLevelSchema = z.enum(["fatal", "error", "warn", "info", "debug", "trace
 
 const ALLOWED_DB_PROTOCOLS = new Set(["file:", "libsql:", "http:", "https:"]);
 const REMOTE_DB_PROTOCOLS = new Set(["libsql:", "https:"]);
+const ALLOWED_REDIS_PROTOCOLS = new Set(["redis:", "rediss:"]);
 
 const DEFAULT_LOG_LEVEL_BY_ENV: Record<z.infer<typeof NodeEnvSchema>, z.infer<typeof LogLevelSchema>> = {
   development: "debug",
   test: "silent",
   production: "info",
 };
+
+function isValidRedisUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return ALLOWED_REDIS_PROTOCOLS.has(parsed.protocol) && parsed.hostname.length > 0;
+  }
+  catch {
+    return false;
+  }
+}
 
 function isValidDatabaseUrl(value: string): boolean {
   if (value === ":memory:") {
@@ -112,6 +123,15 @@ const RawEnvSchema = z.object({
       message: "Must be a valid http:// or https:// URL",
     }).optional(),
   ),
+  REDIS_URL: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().refine(isValidRedisUrl, {
+      message: "Must be a valid redis:// or rediss:// URL",
+    }).optional(),
+  ),
+  CACHE_PREFIX: z.preprocess(emptyToUndefined, z.string().trim().min(1).default("app")),
+  TRUST_PROXY: z.preprocess(parseBooleanEnv, z.boolean().default(false)),
+  RATE_LIMIT_ENABLED: z.preprocess(parseBooleanEnv, z.boolean().optional()),
 });
 
 export interface Env {
@@ -128,6 +148,10 @@ export interface Env {
   WORKER_METRICS_PORT?: number;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
+  REDIS_URL?: string;
+  CACHE_PREFIX: string;
+  TRUST_PROXY: boolean;
+  RATE_LIMIT_ENABLED: boolean;
 }
 
 export interface EnvOverrides extends Partial<Record<keyof Env, string | number | boolean | string[] | undefined>> {}
@@ -192,6 +216,17 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     return z.NEVER;
   }
 
+  if (input.NODE_ENV === "production" && !input.REDIS_URL) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["REDIS_URL"],
+      message: "REDIS_URL is required when NODE_ENV is 'production'",
+    });
+    return z.NEVER;
+  }
+
+  const rateLimitEnabled = input.RATE_LIMIT_ENABLED ?? (input.NODE_ENV !== "test");
+
   let corsOrigins: string[];
   if (input.CORS_ORIGINS === undefined) {
     corsOrigins = input.NODE_ENV === "production" ? [] : ["http://localhost:3000"];
@@ -234,6 +269,10 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     WORKER_METRICS_PORT: input.WORKER_METRICS_PORT,
     BETTER_AUTH_SECRET: betterAuthSecret,
     BETTER_AUTH_URL: betterAuthUrl,
+    REDIS_URL: input.REDIS_URL,
+    CACHE_PREFIX: input.CACHE_PREFIX,
+    TRUST_PROXY: input.TRUST_PROXY,
+    RATE_LIMIT_ENABLED: rateLimitEnabled,
   };
 });
 

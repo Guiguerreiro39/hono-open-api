@@ -31,6 +31,7 @@ describe("core logger", () => {
     const env = parseEnv({
       NODE_ENV: "production",
       DATABASE_URL: "file:app.db",
+      REDIS_URL: "redis://localhost:6379",
       LOG_LEVEL: "info",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",

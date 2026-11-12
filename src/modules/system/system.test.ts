@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import { testClient } from "hono/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -107,6 +108,68 @@ describe("system module", () => {
     expect(shutdownRes.status).toBe(503);
     const shutdownBody = await shutdownRes.json();
     expect(shutdownBody.status).toBe("unhealthy");
+  });
+
+  it("returns 200 ok when REDIS_URL is configured and Redis probe succeeds, and 200 degraded on Redis failure or timeout", async () => {
+    const healthyRedisCtx = await createTestApp(
+      { REDIS_URL: "redis://localhost:6379" },
+      { checkRedis: async () => {} },
+    );
+    cleanups.push(healthyRedisCtx.cleanup);
+
+    const okRes = await healthyRedisCtx.client.ready.$get();
+    expect(okRes.status).toBe(200);
+    const okBody = await okRes.json();
+    expect(okBody.status).toBe("ok");
+    expect(okBody.checks.db.status).toBe("ok");
+    expect(okBody.checks.redis.status).toBe("ok");
+    expect(typeof okBody.checks.redis.latencyMs).toBe("number");
+
+    const closedPort = await new Promise<number>((resolve, reject) => {
+      const server = createServer();
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address();
+        if (!addr || typeof addr === "string") {
+          server.close(() => reject(new Error("Expected numeric port")));
+          return;
+        }
+        server.close(err => err ? reject(err) : resolve(addr.port));
+      });
+    });
+
+    const unreachableRedisCtx = await createTestApp({
+      REDIS_URL: `redis://127.0.0.1:${closedPort}`,
+    });
+    cleanups.push(unreachableRedisCtx.cleanup);
+
+    const degradedRes = await unreachableRedisCtx.client.ready.$get();
+    expect(degradedRes.status).toBe(200);
+    const degradedText = await degradedRes.text();
+    expect(degradedText).not.toContain("ECONNREFUSED");
+    expect(degradedText).not.toContain(String(closedPort));
+    const degradedBody = JSON.parse(degradedText);
+    expect(degradedBody.status).toBe("degraded");
+    expect(degradedBody.checks.db.status).toBe("ok");
+    expect(degradedBody.checks.redis).toMatchObject({
+      status: "error",
+      message: "Redis readiness check failed",
+    });
+
+    const timeoutRedisCtx = await createTestApp(
+      { REDIS_URL: "redis://localhost:6379", READINESS_TIMEOUT_MS: 20 },
+      { checkRedis: () => new Promise(() => {}) },
+    );
+    cleanups.push(timeoutRedisCtx.cleanup);
+
+    const timeoutRes = await timeoutRedisCtx.client.ready.$get();
+    expect(timeoutRes.status).toBe(200);
+    const timeoutBody = await timeoutRes.json();
+    expect(timeoutBody.status).toBe("degraded");
+    expect(timeoutBody.checks.redis).toMatchObject({
+      status: "error",
+      message: "Redis readiness check timed out",
+    });
   });
 
   it("exposes Prometheus metrics on GET /metrics, excludes probes, and labels unmatched 404s", async () => {

@@ -1,14 +1,41 @@
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { Writable } from "node:stream";
 import { createRoute, z } from "@hono/zod-openapi";
 import { hc } from "hono/client";
+import { requestId } from "hono/request-id";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createApp } from "@/app";
+import { createErrorHandler } from "@/core/errors";
+import { createRouter } from "@/core/http";
 import { createLogger } from "@/core/logger";
 import { AUTH_SECURITY } from "@/core/openapi";
+import { createUploadRateLimiter } from "@/core/rate-limit";
 import { parseEnv } from "@/env";
 import { NoopMetricsAdapter, PromMetricsAdapter } from "@/infra/observability";
+import {
+  MemoryCacheAdapter,
+  MemoryRateLimiterAdapter,
+  RedisCacheAdapter,
+  RedisRateLimiterAdapter,
+} from "@/infra/redis";
 import { createTestApp } from "../tests/helpers/test-app";
+
+function collectTsFiles(dir: string): string[] {
+  const entries = readdirSync(dir, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...collectTsFiles(fullPath));
+    }
+    else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
 
 describe("createApp global middleware stack", () => {
   const cleanups: Array<() => Promise<void>> = [];
@@ -99,6 +126,8 @@ describe("createApp global middleware stack", () => {
         },
         handler: async () => new Response("Not implemented", { status: 501 }),
       },
+      cache: new MemoryCacheAdapter(),
+      rateLimiter: new MemoryRateLimiterAdapter(),
       checkDb: () => new Promise(() => {}),
       isShuttingDown: () => false,
       shutdownSignal: ac.signal,
@@ -187,6 +216,8 @@ describe("createApp global middleware stack", () => {
           headers: { "Content-Type": "text/event-stream" },
         }),
       },
+      cache: new MemoryCacheAdapter(),
+      rateLimiter: new MemoryRateLimiterAdapter(),
       checkDb: async () => {},
       isShuttingDown: () => false,
       shutdownSignal: ac.signal,
@@ -231,5 +262,187 @@ describe("createApp global middleware stack", () => {
     const metricsBody = await metricsRes.text();
     expect(metricsBody).toContain("http_requests_total{method=\"GET\",route=\"/api/auth/*\",status=\"200\"} 1");
     expect(metricsBody).not.toContain("http_request_duration_seconds_count{method=\"GET\",route=\"/api/auth/*\"");
+  });
+
+  it("keeps src/core and src/modules free of ioredis and hono-rate-limiter imports", () => {
+    const rootDir = process.cwd();
+    const checkedFiles = [
+      ...collectTsFiles(path.join(rootDir, "src/core")),
+      ...collectTsFiles(path.join(rootDir, "src/modules")),
+    ];
+
+    expect(checkedFiles.length).toBeGreaterThan(0);
+    for (const filePath of checkedFiles) {
+      const source = readFileSync(filePath, "utf8");
+      expect(source).not.toMatch(/\bfrom\s+["'](?:ioredis|hono-rate-limiter)/);
+      expect(source).not.toMatch(/\bimport\s*\(\s*["'](?:ioredis|hono-rate-limiter)/);
+    }
+  });
+
+  it("wires Memory adapters when REDIS_URL is unset and Redis adapters when REDIS_URL is set", async () => {
+    const memCtx = await createTestApp();
+    cleanups.push(memCtx.cleanup);
+    expect(memCtx.container.cache).toBeInstanceOf(MemoryCacheAdapter);
+    expect(memCtx.container.rateLimiter).toBeInstanceOf(MemoryRateLimiterAdapter);
+    expect(memCtx.container.checkRedis).toBeUndefined();
+
+    const redisCtx = await createTestApp({ REDIS_URL: "redis://127.0.0.1:6399" });
+    cleanups.push(redisCtx.cleanup);
+    expect(redisCtx.container.cache).toBeInstanceOf(RedisCacheAdapter);
+    expect(redisCtx.container.rateLimiter).toBeInstanceOf(RedisRateLimiterAdapter);
+    expect(typeof redisCtx.container.checkRedis).toBe("function");
+  });
+
+  it("enforces tiered rate limits, TRUST_PROXY IP resolution, user keying, and exemptions when RATE_LIMIT_ENABLED=true", async () => {
+    const ctx = await createTestApp({
+      RATE_LIMIT_ENABLED: true,
+      TRUST_PROXY: false,
+    });
+    cleanups.push(ctx.cleanup);
+
+    // Auth mutations (10 req/min): even with spoofed X-Forwarded-For when TRUST_PROXY=false, same bucket is exhausted
+    for (let i = 0; i < 10; i++) {
+      const res = await ctx.app.request("/api/auth/sign-in/email", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": `203.0.113.${i + 1}`,
+        },
+        body: JSON.stringify({ email: "nobody@example.com", password: "WrongPassword123!" }),
+      });
+      expect(res.status).toBe(401);
+      expect(res.headers.get("RateLimit-Policy")).toBe("10;w=60");
+      expect(res.headers.get("RateLimit")).toContain(`remaining=${9 - i}`);
+    }
+
+    const blockedSignIn = await ctx.app.request("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": "203.0.113.200",
+        "X-Request-Id": "req-auth-rl",
+      },
+      body: JSON.stringify({ email: "nobody@example.com", password: "WrongPassword123!" }),
+    });
+    expect(blockedSignIn.status).toBe(429);
+    expect(Number(blockedSignIn.headers.get("Retry-After"))).toBeGreaterThanOrEqual(0);
+    expect(await blockedSignIn.json()).toEqual({
+      error: {
+        code: "RATE_LIMIT_EXCEEDED",
+        message: "Too many requests",
+        requestId: "req-auth-rl",
+      },
+    });
+
+    // Exempt routes never throttle or emit RateLimit headers
+    const exemptPaths = [
+      "/health",
+      "/ready",
+      "/metrics",
+      "/doc",
+      "/reference",
+      "/api/auth/open-api/generate-schema",
+    ];
+    for (const exemptPath of exemptPaths) {
+      for (let i = 0; i < 12; i++) {
+        const res = await ctx.app.request(exemptPath);
+        expect(res.status).toBe(200);
+        expect(res.headers.get("RateLimit")).toBeNull();
+      }
+    }
+
+    // Non-mutation /api/auth/* routes use 100 req/min general tier (not exhausted by auth_mutation)
+    const sessionRes = await ctx.app.request("/api/auth/get-session");
+    expect(sessionRes.status).toBe(200);
+    expect(sessionRes.headers.get("RateLimit-Policy")).toBe("100;w=60");
+    expect(sessionRes.headers.get("RateLimit")).toContain("remaining=99");
+
+    // Authenticated /api/v1/* routes key by user:${user.id} so distinct users from the same IP do not share quotas
+    const userA = await ctx.seedUser({ email: "rla@example.com" });
+    const userB = await ctx.seedUser({ email: "rlb@example.com" });
+
+    for (let i = 0; i < 100; i++) {
+      const res = await ctx.client.api.v1.me.$get(undefined, { headers: userA.headers });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("RateLimit-Policy")).toBe("100;w=60");
+    }
+
+    const userABlocked = await ctx.client.api.v1.me.$get(undefined, {
+      headers: { ...userA.headers, "X-Request-Id": "req-user-a-429" },
+    });
+    expect(userABlocked.status).toBe(429);
+
+    const userBAllowed = await ctx.client.api.v1.me.$get(undefined, { headers: userB.headers });
+    expect(userBAllowed.status).toBe(200);
+    expect(userBAllowed.headers.get("RateLimit")).toContain("remaining=99");
+
+    // TRUST_PROXY=true respects X-Forwarded-For and X-Real-IP for unauthenticated auth mutations
+    const proxiedCtx = await createTestApp({
+      RATE_LIMIT_ENABLED: true,
+      TRUST_PROXY: true,
+    });
+    cleanups.push(proxiedCtx.cleanup);
+
+    for (let i = 0; i < 10; i++) {
+      const res = await proxiedCtx.app.request("/api/auth/request-password-reset", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "198.51.100.10, 10.0.0.1",
+        },
+        body: JSON.stringify({ email: "a@example.com" }),
+      });
+      expect(res.status).not.toBe(429);
+    }
+
+    const proxiedBlocked = await proxiedCtx.app.request("/api/auth/request-password-reset", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-real-ip": "198.51.100.10",
+      },
+      body: JSON.stringify({ email: "a@example.com" }),
+    });
+    expect(proxiedBlocked.status).toBe(429);
+
+    const differentClientIp = await proxiedCtx.app.request("/api/auth/request-password-reset", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": "198.51.100.20",
+      },
+      body: JSON.stringify({ email: "a@example.com" }),
+    });
+    expect(differentClientIp.status).not.toBe(429);
+  });
+
+  it("exports reusable createUploadRateLimiter helper enforcing 10 req/min keyed by user or IP", async () => {
+    const ctx = await createTestApp({ RATE_LIMIT_ENABLED: true });
+    cleanups.push(ctx.cleanup);
+
+    const user = await ctx.seedUser({ email: "uploader@example.com" });
+    const uploadRouter = createRouter()
+      .use("*", requestId())
+      .onError(createErrorHandler())
+      .post(
+        "/api/v1/files",
+        createUploadRateLimiter(ctx.container),
+        c => c.json({ ok: true }, 201),
+      );
+
+    for (let i = 0; i < 10; i++) {
+      const res = await uploadRouter.request("/api/v1/files", {
+        method: "POST",
+        headers: user.headers,
+      });
+      expect(res.status).toBe(201);
+      expect(res.headers.get("RateLimit-Policy")).toBe("10;w=60");
+    }
+
+    const blockedUpload = await uploadRouter.request("/api/v1/files", {
+      method: "POST",
+      headers: user.headers,
+    });
+    expect(blockedUpload.status).toBe(429);
   });
 });
