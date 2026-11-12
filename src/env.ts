@@ -56,6 +56,25 @@ function emptyToUndefined(value: unknown): unknown {
   return value;
 }
 
+function parseBooleanEnv(value: unknown): unknown {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "") {
+      return undefined;
+    }
+    if (normalized === "true" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0") {
+      return false;
+    }
+  }
+  return value;
+}
+
 function normalizeOrigin(value: string): string | null {
   try {
     const parsed = new URL(value);
@@ -83,6 +102,9 @@ const RawEnvSchema = z.object({
   DATABASE_AUTH_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
   CORS_ORIGINS: z.union([z.string(), z.array(z.string())]).optional(),
   READINESS_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(2000)),
+  METRICS_ENABLED: z.preprocess(parseBooleanEnv, z.boolean().default(true)),
+  METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
+  WORKER_METRICS_PORT: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).max(65535).optional()),
   BETTER_AUTH_SECRET: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
   BETTER_AUTH_URL: z.preprocess(
     emptyToUndefined,
@@ -101,6 +123,9 @@ export interface Env {
   DATABASE_AUTH_TOKEN?: string;
   CORS_ORIGINS: string[];
   READINESS_TIMEOUT_MS: number;
+  METRICS_ENABLED: boolean;
+  METRICS_TOKEN?: string;
+  WORKER_METRICS_PORT?: number;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
 }
@@ -204,6 +229,9 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     DATABASE_AUTH_TOKEN: input.DATABASE_AUTH_TOKEN,
     CORS_ORIGINS: corsOrigins,
     READINESS_TIMEOUT_MS: input.READINESS_TIMEOUT_MS,
+    METRICS_ENABLED: input.METRICS_ENABLED,
+    METRICS_TOKEN: input.METRICS_TOKEN,
+    WORKER_METRICS_PORT: input.WORKER_METRICS_PORT,
     BETTER_AUTH_SECRET: betterAuthSecret,
     BETTER_AUTH_URL: betterAuthUrl,
   };

@@ -4,11 +4,13 @@ import type { PinoLogger } from "hono-pino";
 import type { Logger } from "pino";
 
 import type { AuthPort, AuthSession, AuthUser } from "@/core/ports/auth";
+import type { MetricsPort } from "@/core/ports/metrics";
 import type { Env } from "@/env";
 
 export interface PlatformDeps {
   env: Env;
   logger: Logger;
+  metrics: MetricsPort;
   auth: AuthPort;
   checkDb: () => Promise<void>;
   isShuttingDown: () => boolean;

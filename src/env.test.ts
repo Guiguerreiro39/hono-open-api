@@ -22,6 +22,9 @@ describe("parseEnv", () => {
     expect(env.PORT).toBe(9999);
     expect(env.CORS_ORIGINS).toEqual(["http://localhost:3000"]);
     expect(env.READINESS_TIMEOUT_MS).toBe(2000);
+    expect(env.METRICS_ENABLED).toBe(true);
+    expect(env.METRICS_TOKEN).toBeUndefined();
+    expect(env.WORKER_METRICS_PORT).toBeUndefined();
     expect(env.BETTER_AUTH_SECRET).toBe("secret");
     expect(env.BETTER_AUTH_URL).toBe("http://localhost:9999");
     expect(process.env).toEqual(beforeSnapshot);
@@ -162,5 +165,34 @@ describe("parseEnv", () => {
 
     expect(exitCode).toBe(1);
     expect(stderrChunks.join("")).toContain("DATABASE_AUTH_TOKEN");
+  });
+
+  it("parses METRICS_ENABLED booleans/strings, METRICS_TOKEN, and WORKER_METRICS_PORT cleanly", () => {
+    expect(parseEnv({ NODE_ENV: "test", METRICS_ENABLED: "false" }).METRICS_ENABLED).toBe(false);
+    expect(parseEnv({ NODE_ENV: "test", METRICS_ENABLED: "FALSE" }).METRICS_ENABLED).toBe(false);
+    expect(parseEnv({ NODE_ENV: "test", METRICS_ENABLED: "0" }).METRICS_ENABLED).toBe(false);
+    expect(parseEnv({ NODE_ENV: "test", METRICS_ENABLED: false }).METRICS_ENABLED).toBe(false);
+    expect(parseEnv({ NODE_ENV: "test", METRICS_ENABLED: "true" }).METRICS_ENABLED).toBe(true);
+    expect(parseEnv({ NODE_ENV: "test", METRICS_ENABLED: "1" }).METRICS_ENABLED).toBe(true);
+    expect(parseEnv({ NODE_ENV: "test", METRICS_ENABLED: "" }).METRICS_ENABLED).toBe(true);
+
+    expect(() => parseEnv({ NODE_ENV: "test", METRICS_ENABLED: "not-a-bool" })).toThrow(EnvValidationError);
+
+    const configured = parseEnv({
+      NODE_ENV: "test",
+      METRICS_TOKEN: "scrape-secret",
+      WORKER_METRICS_PORT: "9091",
+    });
+    expect(configured.METRICS_TOKEN).toBe("scrape-secret");
+    expect(configured.WORKER_METRICS_PORT).toBe(9091);
+
+    expect(parseEnv({ NODE_ENV: "test", METRICS_TOKEN: "   ", WORKER_METRICS_PORT: "" })).toMatchObject({
+      METRICS_TOKEN: undefined,
+      WORKER_METRICS_PORT: undefined,
+    });
+
+    expect(() => parseEnv({ NODE_ENV: "test", WORKER_METRICS_PORT: "70000" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", WORKER_METRICS_PORT: "-1" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", WORKER_METRICS_PORT: "abc" })).toThrow(EnvValidationError);
   });
 });
