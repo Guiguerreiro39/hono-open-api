@@ -1,0 +1,63 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, yes]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  s3:
+    image: rustfs/rustfs:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      # Dev/integration defaults only; override S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY outside local dev.
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+    volumes:
+      - s3_data:/data
+    healthcheck:
+      test: [CMD, sh, -c, "curl -fsS http://127.0.0.1:9000/health && curl -fsS http://127.0.0.1:9001/rustfs/console/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  s3-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      s3:
+        condition: service_healthy
+    restart: no
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${S3_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: "true"
+      S3_BUCKET: ${S3_BUCKET:-app-uploads}
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        aws configure set default.s3.addressing_style path
+        if aws --endpoint-url http://s3:9000 s3api head-bucket --bucket "$$S3_BUCKET" 2>/dev/null; then
+          echo "S3 bucket $$S3_BUCKET already exists"
+        else
+          aws --endpoint-url http://s3:9000 s3 mb "s3://$$S3_BUCKET"
+          echo "Created S3 bucket $$S3_BUCKET"
+        fi
+
+volumes:
+  redis_data:
+  s3_data:
