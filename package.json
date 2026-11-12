@@ -2,7 +2,11 @@
   "name": "hono-open-api-starter",
   "type": "module",
   "version": "1.0.0",
+  "packageManager": "pnpm@10.19.0",
   "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:worker": "tsx watch src/worker.ts",
