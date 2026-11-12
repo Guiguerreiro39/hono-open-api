@@ -4,10 +4,12 @@ import type { PlatformDeps } from "@/core/types";
 import type { Env } from "@/env";
 import type { AppAuth } from "@/infra/auth";
 import type { AppDatabase } from "@/infra/db/client";
+import type { FileRepository } from "@/modules/files/files.repository";
 import type { TaskRepository } from "@/modules/tasks/tasks.repository";
 import { createLogger } from "@/core/logger";
 import { createAuthAdapter } from "@/infra/auth";
 import { createDb } from "@/infra/db/client";
+import { createDrizzleFileRepository } from "@/infra/db/repositories/drizzle-file.repository";
 import { createDrizzleTaskRepository } from "@/infra/db/repositories/drizzle-task.repository";
 import { createMetricsAdapter } from "@/infra/observability";
 import { BullMQQueueAdapter, MemoryQueueAdapter } from "@/infra/queue";
@@ -26,6 +28,7 @@ export interface Container extends PlatformDeps {
   client: Client;
   betterAuth: AppAuth;
   taskRepository: TaskRepository;
+  fileRepository: FileRepository;
   close: () => Promise<void>;
 }
 
@@ -40,6 +43,7 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
   const { auth: betterAuth, port: auth } = createAuthAdapter(env, db);
   const { port: storage, close: closeStorage } = createStorageAdapter(env);
   const taskRepository = createDrizzleTaskRepository(db);
+  const fileRepository = createDrizzleFileRepository(db);
   const shutdownController = new AbortController();
   const workerEnabled = options?.worker ?? env.WORKER_EMBEDDED;
 
@@ -112,6 +116,7 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
     db,
     client,
     taskRepository,
+    fileRepository,
     checkDb: ping,
     checkRedis: redisHandle?.ping,
     isShuttingDown: () => shutdownController.signal.aborted,

@@ -2,7 +2,9 @@ import type { MemoryQueueAdapter } from "@/infra/queue";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { parseEnv } from "@/env";
+import { migrateDatabase } from "@/infra/db/migrate";
 import { authPruneExpiredJob } from "@/modules/auth/auth.jobs";
+import { filesDeleteObjectJob, filesPrunePendingJob } from "@/modules/files/files.jobs";
 import { tasksAuditJob } from "@/modules/tasks/tasks.jobs";
 import { createWorkerRuntime, registerModuleJobs } from "@/worker";
 
@@ -25,18 +27,26 @@ describe("worker runtime (src/worker.ts)", () => {
 
     const runtime = await createWorkerRuntime(env);
     cleanups.push(runtime.close);
+    await migrateDatabase(runtime.container.db);
 
     expect(runtime.metricsPort).toBeTypeOf("number");
     expect(runtime.metricsPort).toBeGreaterThan(0);
 
     const queue = runtime.container.queue as MemoryQueueAdapter;
     const schedules = queue.getSchedules();
-    expect(schedules).toHaveLength(1);
-    expect(schedules[0]).toMatchObject({
-      schedulerId: "auth.pruneExpired",
-      schedule: { pattern: "0 3 * * *", tz: "UTC" },
-      template: { name: "auth.pruneExpired", data: {} },
-    });
+    expect(schedules).toHaveLength(2);
+    expect(schedules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        schedulerId: "auth.pruneExpired",
+        schedule: { pattern: "0 3 * * *", tz: "UTC" },
+        template: { name: "auth.pruneExpired", data: {} },
+      }),
+      expect.objectContaining({
+        schedulerId: "files.prunePending",
+        schedule: { pattern: "0 * * * *", tz: "UTC" },
+        template: { name: "files.prunePending", data: {} },
+      }),
+    ]));
 
     // Enqueue registered jobs and drain
     await queue.enqueue(tasksAuditJob, {
@@ -47,6 +57,8 @@ describe("worker runtime (src/worker.ts)", () => {
       taskName: "Worker test task",
       done: false,
     });
+    await queue.enqueue(filesDeleteObjectJob, { key: "files/u-1/missing" });
+    await queue.enqueue(filesPrunePendingJob, {});
     await queue.drain();
     expect(queue.getJobs().every(j => j.status === "completed")).toBe(true);
 

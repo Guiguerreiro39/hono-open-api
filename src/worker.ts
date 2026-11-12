@@ -12,17 +12,23 @@ import { createMetricsEndpointHandler } from "@/core/observability/metrics";
 import { loadEnv } from "@/env";
 import { createContainer } from "@/infra/container";
 import { registerAuthJobs, registerAuthSchedules } from "@/modules/auth/auth.jobs";
+import { registerFilesJobs, registerFilesSchedules } from "@/modules/files/files.jobs";
 import { registerTasksJobs } from "@/modules/tasks/tasks.jobs";
 
-export type ModuleJobsContainer = Pick<Container, "queue" | "auth">;
+export type ModuleJobsContainer = Pick<Container, "queue" | "auth" | "storage" | "fileRepository">;
 
 export function registerModuleJobs(container: ModuleJobsContainer): void {
   registerTasksJobs(container.queue);
   registerAuthJobs(container.queue, { auth: container.auth });
+  registerFilesJobs(container.queue, {
+    storage: container.storage,
+    fileRepository: container.fileRepository,
+  });
 }
 
 export async function registerModuleSchedules(container: Pick<Container, "queue">): Promise<void> {
   await registerAuthSchedules(container.queue);
+  await registerFilesSchedules(container.queue);
 }
 
 export interface WorkerRuntime {
