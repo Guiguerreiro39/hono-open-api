@@ -1,0 +1,170 @@
+x-app-env: &app-env
+  NODE_ENV: production
+  PORT: "9999"
+  DATABASE_URL: file:/data/app.db
+  REDIS_URL: redis://redis:6379
+  STORAGE_DRIVER: s3
+  S3_ENDPOINT: http://s3:9000
+  S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+  S3_FORCE_PATH_STYLE: "true"
+  # Dev-only defaults for local Compose; override BETTER_AUTH_SECRET, BETTER_AUTH_URL, and S3 credentials outside local dev.
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-only-compose-secret-change-in-production-32c}
+  BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:9999}
+  S3_BUCKET: ${S3_BUCKET:-app-uploads}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-rustfsadmin}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, yes]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  s3:
+    image: rustfs/rustfs:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      # Dev/integration defaults only; override S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY outside local dev.
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+    volumes:
+      - s3_data:/data
+    healthcheck:
+      test: [CMD, sh, -c, "curl -fsS http://127.0.0.1:9000/health && curl -fsS http://127.0.0.1:9001/rustfs/console/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  s3-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      s3:
+        condition: service_healthy
+    restart: no
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${S3_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: "true"
+      S3_BUCKET: ${S3_BUCKET:-app-uploads}
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        aws configure set default.s3.addressing_style path
+        if aws --endpoint-url http://s3:9000 s3api head-bucket --bucket "$$S3_BUCKET" 2>/dev/null; then
+          echo "S3 bucket $$S3_BUCKET already exists"
+        else
+          aws --endpoint-url http://s3:9000 s3 mb "s3://$$S3_BUCKET"
+          echo "Created S3 bucket $$S3_BUCKET"
+        fi
+
+  migrate:
+    image: hono-open-api-starter:local
+    build: .
+    command: [node, dist/src/infra/db/migrate.js]
+    restart: no
+    environment:
+      <<: *app-env
+    volumes:
+      - db_data:/data
+
+  api:
+    image: hono-open-api-starter:local
+    build: .
+    ports:
+      - "9999:9999"
+    environment:
+      <<: *app-env
+    volumes:
+      - db_data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      s3-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    stop_grace_period: 15s
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:9999/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  worker:
+    image: hono-open-api-starter:local
+    build: .
+    command: [node, dist/src/worker.js]
+    environment:
+      <<: *app-env
+      WORKER_METRICS_PORT: "9091"
+    volumes:
+      - db_data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      s3-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    stop_grace_period: 15s
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:9091/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: [observability]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: [observability]
+    ports:
+      - "3001:3000"
+    environment:
+      # Dev-only default credentials for local observability; override outside local dev.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  redis_data:
+  s3_data:
+  db_data:
+  prometheus_data:
+  grafana_data:

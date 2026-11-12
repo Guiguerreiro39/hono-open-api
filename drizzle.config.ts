@@ -1,10 +1,12 @@
 import { defineConfig } from "drizzle-kit";
 
-import env from "@/env";
+import { loadEnv } from "@/env";
+
+const env = loadEnv();
 
 export default defineConfig({
-  schema: "./src/db/schema.ts",
-  out: "./src/db/migrations",
+  schema: "./src/infra/db/schema/index.ts",
+  out: "./src/infra/db/migrations",
   dialect: "turso",
   casing: "snake_case",
   dbCredentials: {

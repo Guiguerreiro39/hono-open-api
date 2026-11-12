@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1794446720230,
+      "tag": "0000_fat_darkhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1794447444142,
+      "tag": "0001_massive_mathemanic",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794486574679,
+      "tag": "0002_chunky_nuke",
+      "breakpoints": true
+    }
+  ]
+}
