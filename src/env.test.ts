@@ -1,7 +1,15 @@
 /* eslint-disable node/no-process-env */
+import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { parse as parseDotenv } from "dotenv";
 import { describe, expect, it } from "vitest";
 
-import { EnvValidationError, loadEnv, parseEnv } from "@/env";
+import { createApp } from "@/app";
+import { EnvSchema, EnvValidationError, loadEnv, parseEnv } from "@/env";
+import { createContainer } from "@/infra/container";
+import { migrateDatabase } from "@/infra/db/migrate";
 
 describe("parseEnv", () => {
   it("applies safe test defaults without mutating process.env", () => {
@@ -435,5 +443,56 @@ describe("parseEnv", () => {
     expect(() => parseEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_DELAY_MS: "-1" })).toThrow(EnvValidationError);
     expect(() => parseEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_DELAY_MS: "1.5" })).toThrow(EnvValidationError);
     expect(() => parseEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_DELAY_MS: "abc" })).toThrow(EnvValidationError);
+  });
+
+  it("parses .env.example cleanly via EnvSchema, covers all Env keys, and boots with zero external services", async () => {
+    const repoRoot = path.resolve(__dirname, "..");
+    const rawExample = readFileSync(path.join(repoRoot, ".env.example"), "utf8");
+    const parsedExample = parseDotenv(rawExample);
+    const validated = EnvSchema.parse(parsedExample);
+
+    expect(validated.NODE_ENV).toBe("development");
+    expect(validated.APP_NAME).toBe("Hono OpenAPI Starter");
+    expect(validated.PORT).toBe(9999);
+    expect(validated.LOG_LEVEL).toBe("debug");
+    expect(validated.DATABASE_URL).toBe("file:dev.db");
+    expect(validated.REDIS_URL).toBeUndefined();
+    expect(validated.S3_BUCKET).toBeUndefined();
+    expect(validated.STORAGE_DRIVER).toBe("local");
+
+    for (const key of Object.keys(validated)) {
+      expect(rawExample, `.env.example should document ${key}`).toMatch(new RegExp(`^#?\\s*${key}=`, "m"));
+    }
+
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "hono-env-example-"));
+    const bootEnv = EnvSchema.parse({
+      ...parsedExample,
+      LOG_LEVEL: "silent",
+      DATABASE_URL: `file:${path.join(tempDir, "dev.db")}`,
+      STORAGE_LOCAL_DIR: path.join(tempDir, "storage"),
+    });
+    const container = createContainer(bootEnv);
+
+    try {
+      await migrateDatabase(container.db);
+      const app = createApp(container);
+
+      const healthRes = await app.request("/health");
+      expect(healthRes.status).toBe(200);
+
+      const readyRes = await app.request("/ready");
+      expect(readyRes.status).toBe(200);
+      expect(await readyRes.json()).toMatchObject({
+        status: "ok",
+        checks: {
+          db: { status: "ok" },
+          redis: { status: "skipped" },
+        },
+      });
+    }
+    finally {
+      await container.close();
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
