@@ -16,6 +16,7 @@ import { metricsMiddleware } from "@/core/observability/metrics";
 import { traceContext } from "@/core/observability/trace";
 import { createOpenAPIDocumentConfig, registerOpenAPISecuritySchemes } from "@/core/openapi";
 import { createApiRateLimiter, createAuthRateLimiter } from "@/core/rate-limit";
+import { createSseConnectionTracker } from "@/core/realtime/sse";
 import { createAuthModule } from "@/modules/auth/auth.index";
 import { createSystemModule } from "@/modules/system/system.index";
 import { createTasksModule } from "@/modules/tasks/tasks.index";
@@ -25,6 +26,12 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 function isSignedStoragePath(path: string): boolean {
   return path === "/_storage" || path.startsWith("/_storage/");
+}
+
+function isTimeoutExemptPath(path: string): boolean {
+  return isSignedStoragePath(path)
+    || path === "/api/v1/tasks/live"
+    || path === "/api/v1/tasks/live/";
 }
 
 const defaultBodyLimit = bodyLimit({
@@ -72,7 +79,7 @@ export function createApp(deps: PlatformDeps & { taskRepository: TaskRepository 
         return defaultBodyLimit(c, next);
       })
       .use("*", async (c, next) => {
-        if (isSignedStoragePath(c.req.path)) {
+        if (isTimeoutExemptPath(c.req.path)) {
           return next();
         }
         return defaultTimeout(c, next);
@@ -116,12 +123,14 @@ export function createApp(deps: PlatformDeps & { taskRepository: TaskRepository 
       }),
   );
 
+  const sseConnections = createSseConnectionTracker(deps.env.MAX_SSE_CONNECTIONS);
+
   const apiV1 = $(
     createRouter()
       .use("*", createApiRateLimiter(deps)),
   )
     .route("/", createAuthModule(deps))
-    .route("/", createTasksModule(deps));
+    .route("/", createTasksModule({ ...deps, sseConnections }));
 
   return withDocsAndAuth
     .route("/", createSystemModule(deps))

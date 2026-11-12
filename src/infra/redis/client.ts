@@ -24,7 +24,16 @@ export interface RedisClientHandle {
   quit: () => Promise<void>;
 }
 
-async function awaitInitialHandshake(client: Redis): Promise<void> {
+export interface RedisLifecycleClient {
+  status: string;
+  connect: () => Promise<unknown>;
+  quit: () => Promise<unknown>;
+  disconnect: () => void;
+  once: (event: string, listener: (...args: any[]) => void) => unknown;
+  off: (event: string, listener: (...args: any[]) => void) => unknown;
+}
+
+export async function awaitRedisHandshake(client: Pick<RedisLifecycleClient, "status" | "connect" | "once" | "off">): Promise<void> {
   if (client.status === "ready") {
     return;
   }
@@ -66,12 +75,12 @@ async function awaitInitialHandshake(client: Redis): Promise<void> {
 
 export async function pingRedisClient(client: Redis): Promise<void> {
   if (client.status === "wait" || client.status === "connecting") {
-    await awaitInitialHandshake(client);
+    await awaitRedisHandshake(client);
   }
   await client.ping();
 }
 
-export async function quitRedisClient(client: Redis): Promise<void> {
+export async function quitRedisClient(client: Pick<RedisLifecycleClient, "status" | "quit" | "disconnect">): Promise<void> {
   if (client.status === "end") {
     return;
   }

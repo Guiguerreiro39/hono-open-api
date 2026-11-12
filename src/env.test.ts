@@ -394,4 +394,16 @@ describe("parseEnv", () => {
     expect(() => parseEnv({ NODE_ENV: "test", WORKER_SHUTDOWN_TIMEOUT_MS: "0" })).toThrow(EnvValidationError);
     expect(() => parseEnv({ NODE_ENV: "test", WORKER_SHUTDOWN_TIMEOUT_MS: "abc" })).toThrow(EnvValidationError);
   });
+
+  it("parses MAX_SSE_CONNECTIONS with default 1000 and allows 0 (unlimited) while rejecting negative or non-integer values", () => {
+    expect(parseEnv({ NODE_ENV: "test" }).MAX_SSE_CONNECTIONS).toBe(1000);
+    expect(parseEnv({ NODE_ENV: "test", MAX_SSE_CONNECTIONS: "" }).MAX_SSE_CONNECTIONS).toBe(1000);
+    expect(parseEnv({ NODE_ENV: "test", MAX_SSE_CONNECTIONS: "0" }).MAX_SSE_CONNECTIONS).toBe(0);
+    expect(parseEnv({ NODE_ENV: "test", MAX_SSE_CONNECTIONS: 0 }).MAX_SSE_CONNECTIONS).toBe(0);
+    expect(parseEnv({ NODE_ENV: "test", MAX_SSE_CONNECTIONS: "250" }).MAX_SSE_CONNECTIONS).toBe(250);
+
+    expect(() => parseEnv({ NODE_ENV: "test", MAX_SSE_CONNECTIONS: "-1" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", MAX_SSE_CONNECTIONS: "1.5" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", MAX_SSE_CONNECTIONS: "abc" })).toThrow(EnvValidationError);
+  });
 });

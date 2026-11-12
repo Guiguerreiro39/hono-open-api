@@ -7,6 +7,7 @@ import { hc } from "hono/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AUTH_SECURITY } from "@/core/openapi";
 import { ListTasksQuerySchema } from "@/modules/tasks/tasks.routes";
+import { createSseReader } from "../../../tests/helpers/sse";
 import { createTestApp } from "../../../tests/helpers/test-app";
 
 function collectTsFiles(dir: string): string[] {
@@ -436,5 +437,159 @@ describe("tasks feature module (/api/v1/tasks)", () => {
     const metricsRes = await ctx.app.request("/metrics");
     const metricsBody = await metricsRes.text();
     expect(metricsBody).toContain("jobs_processed_total{name=\"tasks.audit\",status=\"completed\"} 3");
+  });
+
+  it("streams GET /api/v1/tasks/live with cookie/Bearer auth (401 on ?token=), RBAC scoping, dual-publishing on mutations, OpenAPI spec, and MAX_SSE_CONNECTIONS 503", async () => {
+    const ctx = await createTestApp({ MAX_SSE_CONNECTIONS: 2 });
+    cleanups.push(ctx.cleanup);
+
+    const alice = await ctx.seedUser({ email: "alice-live@example.com" });
+    const bob = await ctx.seedUser({ email: "bob-live@example.com" });
+    const admin = await ctx.seedAdmin({ email: "admin-live@example.com" });
+
+    // Missing auth and ?token= query auth alone both return 401
+    expect((await ctx.client.api.v1.tasks.live.$get({ query: {} })).status).toBe(401);
+    expect((await ctx.app.request(`/api/v1/tasks/live?token=${encodeURIComponent(alice.token)}`)).status).toBe(401);
+
+    // Non-privileged user cannot subscribe to ?scope=all or ?userId=
+    expect((await ctx.client.api.v1.tasks.live.$get({ query: { scope: "all" } }, { headers: alice.headers })).status).toBe(403);
+    expect((await ctx.client.api.v1.tasks.live.$get({ query: { userId: bob.user.id } }, { headers: alice.headers })).status).toBe(403);
+
+    // OpenAPI /doc describes GET /api/v1/tasks/live properly
+    const docRes = await ctx.app.request("/doc");
+    expect(docRes.status).toBe(200);
+    const doc = await docRes.json() as {
+      paths?: Record<string, Record<string, {
+        security?: unknown;
+        responses?: Record<string, { content?: Record<string, unknown> }>;
+      }>>;
+    };
+    const liveOp = doc.paths?.["/api/v1/tasks/live"]?.get;
+    expect(liveOp?.security).toEqual(AUTH_SECURITY);
+    expect(liveOp?.responses?.["200"]?.content?.["text/event-stream"]).toEqual({
+      schema: { type: "string" },
+    });
+    expect(Object.keys(liveOp?.responses ?? {})).toEqual(
+      expect.arrayContaining(["200", "401", "403", "422", "429", "503"]),
+    );
+
+    // Connect Alice via cookie auth and Admin (?scope=all) via Bearer auth (hits MAX_SSE_CONNECTIONS=2)
+    const aliceLiveRes = await ctx.client.api.v1.tasks.live.$get({
+      query: { limit: "10" },
+    }, { headers: alice.cookieHeaders });
+    expect(aliceLiveRes.status).toBe(200);
+    expect(aliceLiveRes.headers.get("content-type")).toContain("text/event-stream");
+
+    const adminAllRes = await ctx.client.api.v1.tasks.live.$get({
+      query: { scope: "all" },
+    }, { headers: admin.headers });
+    expect(adminAllRes.status).toBe(200);
+
+    const aliceSse = createSseReader(aliceLiveRes);
+    const adminSse = createSseReader(adminAllRes);
+    cleanups.push(() => aliceSse.close(), () => adminSse.close());
+
+    const aliceInit = await aliceSse.next();
+    const adminInit = await adminSse.next();
+    expect(aliceInit?.event).toBe("init");
+    expect(JSON.parse(aliceInit!.data)).toMatchObject({ data: [], meta: { hasMore: false } });
+    expect(adminInit?.event).toBe("init");
+    expect(JSON.parse(adminInit!.data)).toMatchObject({ data: [], meta: { hasMore: false } });
+
+    // Third concurrent SSE connection exceeds MAX_SSE_CONNECTIONS=2 -> 503 JSON before flushing SSE headers
+    const overCapRes = await ctx.client.api.v1.tasks.live.$get({
+      query: {},
+    }, {
+      headers: {
+        ...bob.headers,
+        "X-Request-Id": "req-cap-503",
+      },
+    });
+    expect(overCapRes.status).toBe(503);
+    expect(overCapRes.headers.get("content-type")).toContain("application/json");
+    expect(await overCapRes.json()).toEqual({
+      error: {
+        code: "SERVICE_UNAVAILABLE",
+        message: "Too many active SSE connections",
+        requestId: "req-cap-503",
+      },
+    });
+
+    // POST task by Alice -> dual-publishes tasks:<aliceId> and tasks:all
+    const createRes = await ctx.client.api.v1.tasks.$post({
+      json: { name: "Live task" },
+    }, { headers: alice.headers });
+    expect(createRes.status).toBe(201);
+    if (createRes.status !== 201) {
+      throw new Error("Expected task creation");
+    }
+    const createdTask = await createRes.json();
+
+    const aliceAfterCreate = await aliceSse.next();
+    const adminAfterCreate = await adminSse.next();
+    expect(aliceAfterCreate?.event).toBe("update");
+    expect(JSON.parse(aliceAfterCreate!.data).data.map((t: { id: string }) => t.id)).toEqual([createdTask.id]);
+    expect(adminAfterCreate?.event).toBe("update");
+    expect(JSON.parse(adminAfterCreate!.data).data.map((t: { id: string }) => t.id)).toEqual([createdTask.id]);
+
+    // Admin PATCH on Alice's task -> dual-publishes to tasks:<aliceId> (owner) and tasks:all
+    const patchRes = await ctx.client.api.v1.tasks[":id"].$patch({
+      param: { id: createdTask.id },
+      json: { done: true },
+    }, { headers: admin.headers });
+    expect(patchRes.status).toBe(200);
+
+    const aliceAfterPatch = await aliceSse.next();
+    const adminAfterPatch = await adminSse.next();
+    expect(JSON.parse(aliceAfterPatch!.data).data[0].done).toBe(true);
+    expect(JSON.parse(adminAfterPatch!.data).data[0].done).toBe(true);
+
+    // Admin DELETE on Alice's task -> dual-publishes to tasks:<aliceId> and tasks:all
+    const deleteRes = await ctx.client.api.v1.tasks[":id"].$delete({
+      param: { id: createdTask.id },
+    }, { headers: admin.headers });
+    expect(deleteRes.status).toBe(204);
+
+    const aliceAfterDelete = await aliceSse.next();
+    const adminAfterDelete = await adminSse.next();
+    expect(JSON.parse(aliceAfterDelete!.data).data).toEqual([]);
+    expect(JSON.parse(adminAfterDelete!.data).data).toEqual([]);
+
+    // Closing one SSE frees capacity for Bob, and admin can subscribe to ?userId=alice.user.id
+    await aliceSse.close();
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const adminAliceRes = await ctx.client.api.v1.tasks.live.$get({
+      query: { userId: alice.user.id },
+    }, { headers: admin.headers });
+    expect(adminAliceRes.status).toBe(200);
+    const adminAliceSse = createSseReader(adminAliceRes);
+    cleanups.push(() => adminAliceSse.close());
+    await adminAliceSse.next();
+
+    // Verify MetricsPort SSE gauge & request counter (while omitting SSE duration histogram)
+    const activeMetrics = await (await ctx.app.request("/metrics")).text();
+    expect(activeMetrics).toContain("sse_active_connections 2");
+    expect(activeMetrics).toContain("sse_connections_total 3");
+    expect(activeMetrics).not.toContain("http_request_duration_seconds_count{method=\"GET\",route=\"/api/v1/tasks/live\"");
+
+    // Bob's mutation must NOT trigger an update on admin's ?userId=<aliceId> stream
+    await ctx.client.api.v1.tasks.$post({
+      json: { name: "Bob private task" },
+    }, { headers: bob.headers });
+    await ctx.client.api.v1.tasks.$post({
+      json: { name: "Alice second task" },
+    }, { headers: alice.headers });
+
+    const filteredUpdate = await adminAliceSse.next();
+    expect(filteredUpdate?.event).toBe("update");
+    expect(JSON.parse(filteredUpdate!.data).data.map((t: { name: string }) => t.name)).toEqual(["Alice second task"]);
+
+    await adminAliceSse.close();
+    await adminSse.close();
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const closedMetrics = await (await ctx.app.request("/metrics")).text();
+    expect(closedMetrics).toContain("sse_active_connections 0");
   });
 });

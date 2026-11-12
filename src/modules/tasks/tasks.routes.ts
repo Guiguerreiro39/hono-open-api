@@ -34,6 +34,27 @@ export const listTasksRoute = createRoute({
   },
 });
 
+export const liveTasksRoute = createRoute({
+  method: "get",
+  path: "/tasks/live",
+  tags: ["Tasks"],
+  security: AUTH_SECURITY,
+  request: {
+    query: ListTasksQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "Live updating tasks via SSE",
+      content: {
+        "text/event-stream": {
+          schema: { type: "string" },
+        },
+      },
+    },
+    ...createErrorResponses(400, 401, 403, 422, 429, 503),
+  },
+});
+
 export const createTaskRoute = createRoute({
   method: "post",
   path: "/tasks",

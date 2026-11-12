@@ -11,6 +11,7 @@ import { createDb } from "@/infra/db/client";
 import { createDrizzleTaskRepository } from "@/infra/db/repositories/drizzle-task.repository";
 import { createMetricsAdapter } from "@/infra/observability";
 import { BullMQQueueAdapter, MemoryQueueAdapter } from "@/infra/queue";
+import { MemoryPubSubAdapter, RedisPubSubAdapter } from "@/infra/realtime";
 import {
   createRedisClient,
   MemoryCacheAdapter,
@@ -88,6 +89,15 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
         metrics,
       });
 
+  const pubsub = redisHandle
+    ? new RedisPubSubAdapter({
+        pub: redisHandle.client,
+        ping: redisHandle.ping,
+        prefix: env.CACHE_PREFIX,
+        logger,
+      })
+    : new MemoryPubSubAdapter({ logger });
+
   return {
     env,
     logger,
@@ -96,6 +106,7 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
     cache,
     rateLimiter,
     queue,
+    pubsub,
     storage,
     betterAuth,
     db,
@@ -110,6 +121,7 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
         shutdownController.abort();
       }
       await queue.close();
+      await pubsub.close();
       await rateLimiter.close();
       if (redisHandle) {
         await redisHandle.quit();

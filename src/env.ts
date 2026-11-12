@@ -136,6 +136,7 @@ const RawEnvSchema = z.object({
   CACHE_PREFIX: z.preprocess(emptyToUndefined, z.string().trim().min(1).default("app")),
   TRUST_PROXY: z.preprocess(parseBooleanEnv, z.boolean().default(false)),
   RATE_LIMIT_ENABLED: z.preprocess(parseBooleanEnv, z.boolean().optional()),
+  MAX_SSE_CONNECTIONS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).default(1000)),
   STORAGE_DRIVER: z.preprocess(emptyToUndefined, StorageDriverSchema.optional()),
   STORAGE_LOCAL_DIR: z.preprocess(emptyToUndefined, z.string().trim().min(1).default("./.storage")),
   STORAGE_MAX_FILE_SIZE_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(10_485_760)),
@@ -182,6 +183,7 @@ export interface Env {
   CACHE_PREFIX: string;
   TRUST_PROXY: boolean;
   RATE_LIMIT_ENABLED: boolean;
+  MAX_SSE_CONNECTIONS: number;
   STORAGE_DRIVER: StorageDriver;
   STORAGE_LOCAL_DIR: string;
   STORAGE_MAX_FILE_SIZE_BYTES: number;
@@ -350,6 +352,7 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     CACHE_PREFIX: input.CACHE_PREFIX,
     TRUST_PROXY: input.TRUST_PROXY,
     RATE_LIMIT_ENABLED: rateLimitEnabled,
+    MAX_SSE_CONNECTIONS: input.MAX_SSE_CONNECTIONS,
     STORAGE_DRIVER: storageDriver,
     STORAGE_LOCAL_DIR: input.STORAGE_LOCAL_DIR,
     STORAGE_MAX_FILE_SIZE_BYTES: input.STORAGE_MAX_FILE_SIZE_BYTES,
