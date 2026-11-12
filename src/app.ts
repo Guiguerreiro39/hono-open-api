@@ -15,6 +15,7 @@ import { createHttpLogger } from "@/core/logger";
 import { metricsMiddleware } from "@/core/observability/metrics";
 import { traceContext } from "@/core/observability/trace";
 import { createOpenAPIDocumentConfig, registerOpenAPISecuritySchemes } from "@/core/openapi";
+import { createApiRateLimiter, createAuthRateLimiter } from "@/core/rate-limit";
 import { createAuthModule } from "@/modules/auth/auth.index";
 import { createSystemModule } from "@/modules/system/system.index";
 import { createTasksModule } from "@/modules/tasks/tasks.index";
@@ -97,6 +98,7 @@ export function createApp(deps: PlatformDeps & { taskRepository: TaskRepository 
           ],
         }),
       )
+      .use("/api/auth/*", createAuthRateLimiter(deps))
       .on(["POST", "GET"], "/api/auth/*", c => deps.auth.handler(c.req.raw))
       .on(["PUT", "GET"], "/_storage/*", async (c) => {
         if (!deps.storage.handleSignedRequest) {
@@ -114,7 +116,10 @@ export function createApp(deps: PlatformDeps & { taskRepository: TaskRepository 
       }),
   );
 
-  const apiV1 = createRouter()
+  const apiV1 = $(
+    createRouter()
+      .use("*", createApiRateLimiter(deps)),
+  )
     .route("/", createAuthModule(deps))
     .route("/", createTasksModule(deps));
 

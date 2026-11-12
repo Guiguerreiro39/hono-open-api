@@ -18,6 +18,15 @@ function getAuthenticatedUser(c: { get: (key: "user") => AuthUser | undefined })
 
 export function requireAuth(auth: AuthPort): MiddlewareHandler<AppBindings> {
   return async (c, next) => {
+    const existingUser = c.get("user");
+    const existingSession = c.get("session");
+    if (existingUser && existingSession) {
+      if (existingUser.banned) {
+        throw new ForbiddenError("Account is banned");
+      }
+      return next();
+    }
+
     const res = await auth.getSession(c.req.raw.headers);
     if (!res) {
       throw new UnauthorizedError();

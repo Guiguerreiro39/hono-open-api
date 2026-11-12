@@ -25,6 +25,10 @@ describe("parseEnv", () => {
     expect(env.METRICS_ENABLED).toBe(true);
     expect(env.METRICS_TOKEN).toBeUndefined();
     expect(env.WORKER_METRICS_PORT).toBeUndefined();
+    expect(env.REDIS_URL).toBeUndefined();
+    expect(env.CACHE_PREFIX).toBe("app");
+    expect(env.TRUST_PROXY).toBe(false);
+    expect(env.RATE_LIMIT_ENABLED).toBe(false);
     expect(env.BETTER_AUTH_SECRET).toBe("secret");
     expect(env.BETTER_AUTH_URL).toBe("http://localhost:9999");
     expect(env.STORAGE_DRIVER).toBe("memory");
@@ -67,6 +71,7 @@ describe("parseEnv", () => {
     const validProdAuth = {
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",
+      REDIS_URL: "redis://localhost:6379",
       S3_BUCKET: "prod-uploads",
     };
 
@@ -123,6 +128,7 @@ describe("parseEnv", () => {
       DATABASE_URL: "file:/data/app.db",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",
+      REDIS_URL: "redis://localhost:6379",
       S3_BUCKET: "prod-uploads",
     };
 
@@ -202,6 +208,7 @@ describe("parseEnv", () => {
     expect(() => parseEnv({
       NODE_ENV: "production",
       DATABASE_URL: "file:/data/app.db",
+      REDIS_URL: "redis://localhost:6379",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",
       S3_BUCKET: undefined,
@@ -211,6 +218,7 @@ describe("parseEnv", () => {
     const prodLocal = parseEnv({
       NODE_ENV: "production",
       DATABASE_URL: "file:/data/app.db",
+      REDIS_URL: "redis://localhost:6379",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",
       STORAGE_DRIVER: "local",
@@ -308,5 +316,51 @@ describe("parseEnv", () => {
     expect(() => parseEnv({ NODE_ENV: "test", WORKER_METRICS_PORT: "70000" })).toThrow(EnvValidationError);
     expect(() => parseEnv({ NODE_ENV: "test", WORKER_METRICS_PORT: "-1" })).toThrow(EnvValidationError);
     expect(() => parseEnv({ NODE_ENV: "test", WORKER_METRICS_PORT: "abc" })).toThrow(EnvValidationError);
+  });
+
+  it("validates REDIS_URL (required in production), CACHE_PREFIX, TRUST_PROXY, and RATE_LIMIT_ENABLED", () => {
+    const prodBase = {
+      NODE_ENV: "production" as const,
+      DATABASE_URL: "file:/data/app.db",
+      BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
+      BETTER_AUTH_URL: "https://api.example.com",
+      S3_BUCKET: "prod-uploads",
+    };
+
+    expect(() => parseEnv(prodBase)).toThrow(EnvValidationError);
+    expect(() => parseEnv({ ...prodBase, REDIS_URL: "   " })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ ...prodBase, REDIS_URL: "http://localhost:6379" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ ...prodBase, REDIS_URL: "redis://" })).toThrow(EnvValidationError);
+
+    const redisProd = parseEnv({ ...prodBase, REDIS_URL: "redis://redis:6379/0" });
+    expect(redisProd.REDIS_URL).toBe("redis://redis:6379/0");
+    expect(redisProd.RATE_LIMIT_ENABLED).toBe(true);
+    expect(redisProd.TRUST_PROXY).toBe(false);
+    expect(redisProd.CACHE_PREFIX).toBe("app");
+
+    const tlsRedisProd = parseEnv({
+      ...prodBase,
+      REDIS_URL: "rediss://default:secret@cache.example.com:6380",
+      CACHE_PREFIX: "prod-api",
+      TRUST_PROXY: "true",
+      RATE_LIMIT_ENABLED: "false",
+    });
+    expect(tlsRedisProd.REDIS_URL).toBe("rediss://default:secret@cache.example.com:6380");
+    expect(tlsRedisProd.CACHE_PREFIX).toBe("prod-api");
+    expect(tlsRedisProd.TRUST_PROXY).toBe(true);
+    expect(tlsRedisProd.RATE_LIMIT_ENABLED).toBe(false);
+
+    const devDefaults = parseEnv({ NODE_ENV: "development" });
+    expect(devDefaults.REDIS_URL).toBeUndefined();
+    expect(devDefaults.RATE_LIMIT_ENABLED).toBe(true);
+
+    expect(parseEnv({ NODE_ENV: "test", REDIS_URL: "" }).REDIS_URL).toBeUndefined();
+    expect(parseEnv({ NODE_ENV: "test", RATE_LIMIT_ENABLED: "true", TRUST_PROXY: "1" })).toMatchObject({
+      RATE_LIMIT_ENABLED: true,
+      TRUST_PROXY: true,
+    });
+    expect(parseEnv({ NODE_ENV: "test", RATE_LIMIT_ENABLED: "" }).RATE_LIMIT_ENABLED).toBe(false);
+    expect(() => parseEnv({ NODE_ENV: "test", TRUST_PROXY: "yes" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", RATE_LIMIT_ENABLED: "maybe" })).toThrow(EnvValidationError);
   });
 });

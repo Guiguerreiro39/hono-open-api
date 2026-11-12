@@ -27,6 +27,7 @@ describe("database seeding", () => {
     const prodEnv = parseEnv({
       NODE_ENV: "production",
       DATABASE_URL: ":memory:",
+      REDIS_URL: "redis://localhost:6379",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",
       S3_BUCKET: "prod-uploads",

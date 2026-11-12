@@ -9,8 +9,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { NotFoundError, UnauthorizedError } from "@/core/errors";
 
 export interface SystemModuleDeps {
-  env: Pick<Env, "APP_NAME" | "READINESS_TIMEOUT_MS" | "METRICS_ENABLED" | "METRICS_TOKEN">;
+  env: Pick<Env, "APP_NAME" | "READINESS_TIMEOUT_MS" | "METRICS_ENABLED" | "METRICS_TOKEN" | "REDIS_URL">;
   checkDb: PlatformDeps["checkDb"];
+  checkRedis?: PlatformDeps["checkRedis"];
   isShuttingDown: PlatformDeps["isShuttingDown"];
   metrics: MetricsPort;
 }
@@ -37,6 +38,7 @@ class ProbeTimeoutError extends Error {
 }
 
 async function runProbeWithTimeout(
+  label: "Database" | "Redis",
   probe: () => Promise<void>,
   timeoutMs: number,
 ): Promise<{ check: ProbeCheck; error?: unknown }> {
@@ -66,8 +68,8 @@ async function runProbeWithTimeout(
         status: "error",
         latencyMs: Math.round(performance.now() - startedAt),
         message: err instanceof ProbeTimeoutError
-          ? "Database readiness check timed out"
-          : "Database readiness check failed",
+          ? `${label} readiness check timed out`
+          : `${label} readiness check failed`,
       },
       error: err,
     };
@@ -108,8 +110,14 @@ export function createSystemHandlers(deps: SystemModuleDeps) {
       }, 503);
     }
 
-    const [dbSettlement] = await Promise.allSettled([
-      runProbeWithTimeout(deps.checkDb, deps.env.READINESS_TIMEOUT_MS),
+    const shouldCheckRedis = deps.env.REDIS_URL !== undefined && deps.checkRedis !== undefined;
+    const [dbSettlement, redisSettlement] = await Promise.allSettled([
+      runProbeWithTimeout("Database", deps.checkDb, deps.env.READINESS_TIMEOUT_MS),
+      shouldCheckRedis
+        ? runProbeWithTimeout("Redis", deps.checkRedis!, deps.env.READINESS_TIMEOUT_MS)
+        : Promise.resolve<{ check: ProbeCheck; error?: unknown }>({
+            check: { status: "skipped" },
+          }),
     ]);
 
     const dbResult = dbSettlement.status === "fulfilled"
@@ -119,13 +127,23 @@ export function createSystemHandlers(deps: SystemModuleDeps) {
           error: dbSettlement.reason,
         };
 
+    const redisResult = redisSettlement.status === "fulfilled"
+      ? redisSettlement.value
+      : {
+          check: { status: "error" as const, message: "Redis readiness check failed" },
+          error: redisSettlement.reason,
+        };
+
     if (dbResult.error !== undefined) {
       c.get("logger")?.error({ err: dbResult.error }, "Database readiness probe failed");
+    }
+    if (redisResult.error !== undefined) {
+      c.get("logger")?.warn({ err: redisResult.error }, "Redis readiness probe failed");
     }
 
     const checks = {
       db: dbResult.check,
-      redis: { status: "skipped" as const },
+      redis: redisResult.check,
     };
 
     if (checks.db.status === "error") {
@@ -134,6 +152,14 @@ export function createSystemHandlers(deps: SystemModuleDeps) {
         timestamp,
         checks,
       }, 503);
+    }
+
+    if (checks.redis.status === "error") {
+      return c.json({
+        status: "degraded" as const,
+        timestamp,
+        checks,
+      }, 200);
     }
 
     return c.json({

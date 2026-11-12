@@ -61,6 +61,9 @@ export function createBetterAuth(
         enabled: false,
       },
     },
+    rateLimit: {
+      enabled: false,
+    },
     advanced: {
       defaultCookieAttributes: {
         httpOnly: true,

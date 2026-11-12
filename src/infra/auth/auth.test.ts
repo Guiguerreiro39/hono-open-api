@@ -20,6 +20,7 @@ describe("better auth adapter", () => {
     const prodEnv = parseEnv({
       NODE_ENV: "production",
       DATABASE_URL: ":memory:",
+      REDIS_URL: "redis://localhost:6379",
       CORS_ORIGINS: "https://app.example.com",
       BETTER_AUTH_URL: "https://api.example.com",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
@@ -30,7 +31,9 @@ describe("better auth adapter", () => {
     await migrateDatabase(db);
 
     const { auth, port } = createAuthAdapter(prodEnv, db);
+    expect(auth.options.rateLimit?.enabled).toBe(false);
     const authContext = await auth.$context;
+    expect(authContext.rateLimit.enabled).toBe(false);
     expect(authContext.trustedOrigins).toEqual(expect.arrayContaining([
       "https://app.example.com",
       "https://api.example.com",
