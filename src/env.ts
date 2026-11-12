@@ -7,6 +7,9 @@ import { z } from "zod";
 
 const NodeEnvSchema = z.enum(["development", "test", "production"]);
 const LogLevelSchema = z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]);
+const StorageDriverSchema = z.enum(["memory", "local", "s3"]);
+
+export type StorageDriver = z.infer<typeof StorageDriverSchema>;
 
 const ALLOWED_DB_PROTOCOLS = new Set(["file:", "libsql:", "http:", "https:"]);
 const REMOTE_DB_PROTOCOLS = new Set(["libsql:", "https:"]);
@@ -57,22 +60,20 @@ function emptyToUndefined(value: unknown): unknown {
 }
 
 function parseBooleanEnv(value: unknown): unknown {
-  if (typeof value === "boolean") {
-    return value;
+  const normalized = emptyToUndefined(value);
+  if (normalized === undefined || typeof normalized === "boolean") {
+    return normalized;
   }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "") {
-      return undefined;
-    }
-    if (normalized === "true" || normalized === "1") {
+  if (typeof normalized === "string") {
+    const lower = normalized.trim().toLowerCase();
+    if (lower === "true" || lower === "1") {
       return true;
     }
-    if (normalized === "false" || normalized === "0") {
+    if (lower === "false" || lower === "0") {
       return false;
     }
   }
-  return value;
+  return normalized;
 }
 
 function normalizeOrigin(value: string): string | null {
@@ -112,6 +113,29 @@ const RawEnvSchema = z.object({
       message: "Must be a valid http:// or https:// URL",
     }).optional(),
   ),
+  STORAGE_DRIVER: z.preprocess(emptyToUndefined, StorageDriverSchema.optional()),
+  STORAGE_LOCAL_DIR: z.preprocess(emptyToUndefined, z.string().trim().min(1).default("./.storage")),
+  STORAGE_MAX_FILE_SIZE_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(10_485_760)),
+  STORAGE_PRESIGN_MAX_FILE_SIZE_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(104_857_600)),
+  STORAGE_PRESIGN_EXPIRES_SECONDS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(900)),
+  STORAGE_SIGNING_SECRET: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
+  S3_BUCKET: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
+  S3_REGION: z.preprocess(emptyToUndefined, z.string().trim().min(1).default("us-east-1")),
+  S3_ENDPOINT: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().refine(value => normalizeOrigin(value) !== null, {
+      message: "Must be a valid http:// or https:// URL",
+    }).optional(),
+  ),
+  S3_PUBLIC_ENDPOINT: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().refine(value => normalizeOrigin(value) !== null, {
+      message: "Must be a valid http:// or https:// URL",
+    }).optional(),
+  ),
+  S3_ACCESS_KEY_ID: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
+  S3_SECRET_ACCESS_KEY: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
+  S3_FORCE_PATH_STYLE: z.preprocess(parseBooleanEnv, z.boolean().default(false)),
 });
 
 export interface Env {
@@ -128,6 +152,19 @@ export interface Env {
   WORKER_METRICS_PORT?: number;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
+  STORAGE_DRIVER: StorageDriver;
+  STORAGE_LOCAL_DIR: string;
+  STORAGE_MAX_FILE_SIZE_BYTES: number;
+  STORAGE_PRESIGN_MAX_FILE_SIZE_BYTES: number;
+  STORAGE_PRESIGN_EXPIRES_SECONDS: number;
+  STORAGE_SIGNING_SECRET: string;
+  S3_BUCKET?: string;
+  S3_REGION: string;
+  S3_ENDPOINT?: string;
+  S3_PUBLIC_ENDPOINT?: string;
+  S3_ACCESS_KEY_ID?: string;
+  S3_SECRET_ACCESS_KEY?: string;
+  S3_FORCE_PATH_STYLE: boolean;
 }
 
 export interface EnvOverrides extends Partial<Record<keyof Env, string | number | boolean | string[] | undefined>> {}
@@ -220,6 +257,37 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     corsOrigins = normalized;
   }
 
+  const storageDriver: StorageDriver = input.STORAGE_DRIVER
+    ?? (input.NODE_ENV === "test"
+      ? "memory"
+      : input.NODE_ENV === "production"
+        ? "s3"
+        : input.S3_BUCKET
+          ? "s3"
+          : "local");
+
+  if (storageDriver === "s3" && !input.S3_BUCKET) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["S3_BUCKET"],
+      message: "S3_BUCKET is required when STORAGE_DRIVER is 's3'",
+    });
+    return z.NEVER;
+  }
+
+  const hasAccessKeyId = input.S3_ACCESS_KEY_ID !== undefined;
+  const hasSecretAccessKey = input.S3_SECRET_ACCESS_KEY !== undefined;
+  if (hasAccessKeyId !== hasSecretAccessKey) {
+    ctx.addIssue({
+      code: "custom",
+      path: [hasAccessKeyId ? "S3_SECRET_ACCESS_KEY" : "S3_ACCESS_KEY_ID"],
+      message: "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must both be set or both be omitted",
+    });
+    return z.NEVER;
+  }
+
+  const storageSigningSecret = input.STORAGE_SIGNING_SECRET ?? betterAuthSecret;
+
   return {
     NODE_ENV: input.NODE_ENV,
     APP_NAME: input.APP_NAME,
@@ -234,6 +302,19 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     WORKER_METRICS_PORT: input.WORKER_METRICS_PORT,
     BETTER_AUTH_SECRET: betterAuthSecret,
     BETTER_AUTH_URL: betterAuthUrl,
+    STORAGE_DRIVER: storageDriver,
+    STORAGE_LOCAL_DIR: input.STORAGE_LOCAL_DIR,
+    STORAGE_MAX_FILE_SIZE_BYTES: input.STORAGE_MAX_FILE_SIZE_BYTES,
+    STORAGE_PRESIGN_MAX_FILE_SIZE_BYTES: input.STORAGE_PRESIGN_MAX_FILE_SIZE_BYTES,
+    STORAGE_PRESIGN_EXPIRES_SECONDS: input.STORAGE_PRESIGN_EXPIRES_SECONDS,
+    STORAGE_SIGNING_SECRET: storageSigningSecret,
+    S3_BUCKET: input.S3_BUCKET,
+    S3_REGION: input.S3_REGION,
+    S3_ENDPOINT: input.S3_ENDPOINT,
+    S3_PUBLIC_ENDPOINT: input.S3_PUBLIC_ENDPOINT,
+    S3_ACCESS_KEY_ID: input.S3_ACCESS_KEY_ID,
+    S3_SECRET_ACCESS_KEY: input.S3_SECRET_ACCESS_KEY,
+    S3_FORCE_PATH_STYLE: input.S3_FORCE_PATH_STYLE,
   };
 });
 

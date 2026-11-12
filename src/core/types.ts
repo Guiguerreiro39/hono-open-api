@@ -5,6 +5,7 @@ import type { Logger } from "pino";
 
 import type { AuthPort, AuthSession, AuthUser } from "@/core/ports/auth";
 import type { MetricsPort } from "@/core/ports/metrics";
+import type { StoragePort } from "@/core/ports/storage";
 import type { Env } from "@/env";
 
 export interface PlatformDeps {
@@ -12,6 +13,7 @@ export interface PlatformDeps {
   logger: Logger;
   metrics: MetricsPort;
   auth: AuthPort;
+  storage: StoragePort;
   checkDb: () => Promise<void>;
   isShuttingDown: () => boolean;
   shutdownSignal: AbortSignal;

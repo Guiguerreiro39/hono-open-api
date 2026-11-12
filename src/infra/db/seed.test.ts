@@ -29,6 +29,7 @@ describe("database seeding", () => {
       DATABASE_URL: ":memory:",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",
+      S3_BUCKET: "prod-uploads",
     });
     const { db, close } = createDb(prodEnv);
     cleanups.push(close);

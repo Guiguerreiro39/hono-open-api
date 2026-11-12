@@ -27,6 +27,14 @@ describe("parseEnv", () => {
     expect(env.WORKER_METRICS_PORT).toBeUndefined();
     expect(env.BETTER_AUTH_SECRET).toBe("secret");
     expect(env.BETTER_AUTH_URL).toBe("http://localhost:9999");
+    expect(env.STORAGE_DRIVER).toBe("memory");
+    expect(env.STORAGE_LOCAL_DIR).toBe("./.storage");
+    expect(env.STORAGE_MAX_FILE_SIZE_BYTES).toBe(10_485_760);
+    expect(env.STORAGE_PRESIGN_MAX_FILE_SIZE_BYTES).toBe(104_857_600);
+    expect(env.STORAGE_PRESIGN_EXPIRES_SECONDS).toBe(900);
+    expect(env.STORAGE_SIGNING_SECRET).toBe("secret");
+    expect(env.S3_REGION).toBe("us-east-1");
+    expect(env.S3_FORCE_PATH_STYLE).toBe(false);
     expect(process.env).toEqual(beforeSnapshot);
 
     const defaultEnv = parseEnv();
@@ -59,6 +67,7 @@ describe("parseEnv", () => {
     const validProdAuth = {
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",
+      S3_BUCKET: "prod-uploads",
     };
 
     expect(() => parseEnv({
@@ -114,6 +123,7 @@ describe("parseEnv", () => {
       DATABASE_URL: "file:/data/app.db",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",
+      S3_BUCKET: "prod-uploads",
     };
 
     expect(() => parseEnv({
@@ -165,6 +175,110 @@ describe("parseEnv", () => {
 
     expect(exitCode).toBe(1);
     expect(stderrChunks.join("")).toContain("DATABASE_AUTH_TOKEN");
+  });
+
+  it("auto-selects STORAGE_DRIVER by environment and enforces S3_BUCKET when s3", () => {
+    const devLocal = parseEnv({
+      NODE_ENV: "development",
+      S3_BUCKET: undefined,
+      STORAGE_DRIVER: undefined,
+    });
+    expect(devLocal.STORAGE_DRIVER).toBe("local");
+
+    const devS3 = parseEnv({
+      NODE_ENV: "development",
+      S3_BUCKET: "dev-bucket",
+      STORAGE_DRIVER: undefined,
+    });
+    expect(devS3.STORAGE_DRIVER).toBe("s3");
+    expect(devS3.S3_BUCKET).toBe("dev-bucket");
+
+    expect(() => parseEnv({
+      NODE_ENV: "test",
+      STORAGE_DRIVER: "s3",
+      S3_BUCKET: undefined,
+    })).toThrow(EnvValidationError);
+
+    expect(() => parseEnv({
+      NODE_ENV: "production",
+      DATABASE_URL: "file:/data/app.db",
+      BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
+      BETTER_AUTH_URL: "https://api.example.com",
+      S3_BUCKET: undefined,
+      STORAGE_DRIVER: undefined,
+    })).toThrow(EnvValidationError);
+
+    const prodLocal = parseEnv({
+      NODE_ENV: "production",
+      DATABASE_URL: "file:/data/app.db",
+      BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
+      BETTER_AUTH_URL: "https://api.example.com",
+      STORAGE_DRIVER: "local",
+      S3_BUCKET: undefined,
+    });
+    expect(prodLocal.STORAGE_DRIVER).toBe("local");
+  });
+
+  it("validates S3 credentials as an optional pair, parses S3_FORCE_PATH_STYLE booleans, and falls back STORAGE_SIGNING_SECRET", () => {
+    const iamEnv = parseEnv({
+      NODE_ENV: "test",
+      STORAGE_DRIVER: "s3",
+      S3_BUCKET: "iam-bucket",
+      S3_ACCESS_KEY_ID: undefined,
+      S3_SECRET_ACCESS_KEY: undefined,
+    });
+    expect(iamEnv.S3_ACCESS_KEY_ID).toBeUndefined();
+    expect(iamEnv.S3_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(iamEnv.STORAGE_SIGNING_SECRET).toBe("secret");
+
+    expect(() => parseEnv({
+      NODE_ENV: "test",
+      STORAGE_DRIVER: "s3",
+      S3_BUCKET: "iam-bucket",
+      S3_ACCESS_KEY_ID: "only-access-key",
+      S3_SECRET_ACCESS_KEY: undefined,
+    })).toThrow(EnvValidationError);
+
+    expect(() => parseEnv({
+      NODE_ENV: "test",
+      STORAGE_DRIVER: "s3",
+      S3_BUCKET: "iam-bucket",
+      S3_ACCESS_KEY_ID: undefined,
+      S3_SECRET_ACCESS_KEY: "only-secret-key",
+    })).toThrow(EnvValidationError);
+
+    const explicitSigning = parseEnv({
+      NODE_ENV: "test",
+      STORAGE_SIGNING_SECRET: "dedicated-storage-secret",
+      S3_FORCE_PATH_STYLE: "false",
+    });
+    expect(explicitSigning.STORAGE_SIGNING_SECRET).toBe("dedicated-storage-secret");
+    expect(explicitSigning.S3_FORCE_PATH_STYLE).toBe(false);
+
+    const pathStyleTrue = parseEnv({
+      NODE_ENV: "test",
+      S3_FORCE_PATH_STYLE: "true",
+      S3_ENDPOINT: "http://localhost:9000",
+      S3_PUBLIC_ENDPOINT: "https://files.example.com",
+    });
+    expect(pathStyleTrue.S3_FORCE_PATH_STYLE).toBe(true);
+    expect(pathStyleTrue.S3_ENDPOINT).toBe("http://localhost:9000");
+    expect(pathStyleTrue.S3_PUBLIC_ENDPOINT).toBe("https://files.example.com");
+
+    expect(() => parseEnv({
+      NODE_ENV: "test",
+      S3_FORCE_PATH_STYLE: "not-a-boolean",
+    })).toThrow(EnvValidationError);
+
+    expect(() => parseEnv({
+      NODE_ENV: "test",
+      S3_ENDPOINT: "ftp://invalid-scheme:9000",
+    })).toThrow(EnvValidationError);
+
+    expect(() => parseEnv({
+      NODE_ENV: "test",
+      S3_PUBLIC_ENDPOINT: "not-a-url",
+    })).toThrow(EnvValidationError);
   });
 
   it("parses METRICS_ENABLED booleans/strings, METRICS_TOKEN, and WORKER_METRICS_PORT cleanly", () => {
