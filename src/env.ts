@@ -83,8 +83,13 @@ const RawEnvSchema = z.object({
   DATABASE_AUTH_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
   CORS_ORIGINS: z.union([z.string(), z.array(z.string())]).optional(),
   READINESS_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(2000)),
-  BETTER_AUTH_SECRET: z.preprocess(emptyToUndefined, z.string().trim().min(1).default("secret")),
-  BETTER_AUTH_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://localhost:9999")),
+  BETTER_AUTH_SECRET: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
+  BETTER_AUTH_URL: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().refine(value => normalizeOrigin(value) !== null, {
+      message: "Must be a valid http:// or https:// URL",
+    }).optional(),
+  ),
 });
 
 export interface Env {
@@ -129,6 +134,39 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     return z.NEVER;
   }
 
+  const betterAuthSecret = input.BETTER_AUTH_SECRET
+    ?? (input.NODE_ENV === "production" ? undefined : "secret");
+
+  if (!betterAuthSecret) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["BETTER_AUTH_SECRET"],
+      message: "BETTER_AUTH_SECRET is required when NODE_ENV is 'production'",
+    });
+    return z.NEVER;
+  }
+
+  if (input.NODE_ENV === "production" && (betterAuthSecret === "secret" || betterAuthSecret.length < 32)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["BETTER_AUTH_SECRET"],
+      message: "BETTER_AUTH_SECRET must be at least 32 characters and not 'secret' in 'production'",
+    });
+    return z.NEVER;
+  }
+
+  const betterAuthUrl = input.BETTER_AUTH_URL
+    ?? (input.NODE_ENV === "production" ? undefined : "http://localhost:9999");
+
+  if (!betterAuthUrl) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["BETTER_AUTH_URL"],
+      message: "BETTER_AUTH_URL is required when NODE_ENV is 'production'",
+    });
+    return z.NEVER;
+  }
+
   let corsOrigins: string[];
   if (input.CORS_ORIGINS === undefined) {
     corsOrigins = input.NODE_ENV === "production" ? [] : ["http://localhost:3000"];
@@ -166,8 +204,8 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     DATABASE_AUTH_TOKEN: input.DATABASE_AUTH_TOKEN,
     CORS_ORIGINS: corsOrigins,
     READINESS_TIMEOUT_MS: input.READINESS_TIMEOUT_MS,
-    BETTER_AUTH_SECRET: input.BETTER_AUTH_SECRET,
-    BETTER_AUTH_URL: input.BETTER_AUTH_URL,
+    BETTER_AUTH_SECRET: betterAuthSecret,
+    BETTER_AUTH_URL: betterAuthUrl,
   };
 });
 

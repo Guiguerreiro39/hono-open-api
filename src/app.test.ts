@@ -88,6 +88,14 @@ describe("createApp global middleware stack", () => {
     const app = createApp({
       env,
       logger: createLogger(env),
+      auth: {
+        getSession: async () => null,
+        hasPermission: async () => false,
+        updateProfile: async () => {
+          throw new Error("Not implemented");
+        },
+        handler: async () => new Response("Not implemented", { status: 501 }),
+      },
       checkDb: () => new Promise(() => {}),
       isShuttingDown: () => false,
       shutdownSignal: ac.signal,

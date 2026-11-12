@@ -1,2 +1,9 @@
-// Feature module tables (auth, tasks, files) are exported from this barrel as their slices land.
-export {};
+export {
+  account,
+  accountRelations,
+  session,
+  sessionRelations,
+  user,
+  userRelations,
+  verification,
+} from "./auth";

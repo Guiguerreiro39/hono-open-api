@@ -27,7 +27,13 @@ function createMemoryLogStream() {
 
 describe("core logger", () => {
   it("formats ISO timestamps and redacts secret fields", () => {
-    const env = parseEnv({ NODE_ENV: "production", DATABASE_URL: "file:app.db", LOG_LEVEL: "info" });
+    const env = parseEnv({
+      NODE_ENV: "production",
+      DATABASE_URL: "file:app.db",
+      LOG_LEVEL: "info",
+      BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
+      BETTER_AUTH_URL: "https://api.example.com",
+    });
     const sink = createMemoryLogStream();
     const logger = createLogger(env, sink.stream);
 
