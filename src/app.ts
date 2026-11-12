@@ -11,6 +11,8 @@ import { timeout } from "hono/timeout";
 import { createErrorHandler, notFoundHandler, PayloadTooLargeError } from "@/core/errors";
 import { createRouter } from "@/core/http";
 import { createHttpLogger } from "@/core/logger";
+import { metricsMiddleware } from "@/core/observability/metrics";
+import { traceContext } from "@/core/observability/trace";
 import { createOpenAPIDocumentConfig, registerOpenAPISecuritySchemes } from "@/core/openapi";
 import { createAuthModule } from "@/modules/auth/auth.index";
 import { createSystemModule } from "@/modules/system/system.index";
@@ -34,7 +36,9 @@ export function createApp(deps: PlatformDeps) {
   const base = $(
     createRouter()
       .use("*", requestId())
+      .use("*", traceContext())
       .use("*", createHttpLogger(deps.logger))
+      .use("*", metricsMiddleware(deps.metrics))
       .use("*", cors({ origin: deps.env.CORS_ORIGINS, credentials: true }))
       .use("*", async (c, next) => {
         if (c.req.path === "/reference") {

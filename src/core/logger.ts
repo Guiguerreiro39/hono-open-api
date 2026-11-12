@@ -6,6 +6,8 @@ import { pinoLogger } from "hono-pino";
 import pino from "pino";
 import pretty from "pino-pretty";
 
+import { getTraceContext } from "@/core/observability/trace";
+
 const REDACT_PATHS = [
   "password",
   "token",
@@ -40,6 +42,16 @@ export function createLogger(
     redact: {
       paths: REDACT_PATHS,
       censor: "[REDACTED]",
+    },
+    mixin() {
+      const trace = getTraceContext();
+      if (!trace) {
+        return {};
+      }
+      return {
+        trace_id: trace.traceId,
+        span_id: trace.spanId,
+      };
     },
   };
 

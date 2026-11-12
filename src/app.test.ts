@@ -1,3 +1,4 @@
+import { Writable } from "node:stream";
 import { createRoute, z } from "@hono/zod-openapi";
 import { hc } from "hono/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +7,7 @@ import { createApp } from "@/app";
 import { createLogger } from "@/core/logger";
 import { AUTH_SECURITY } from "@/core/openapi";
 import { parseEnv } from "@/env";
+import { NoopMetricsAdapter, PromMetricsAdapter } from "@/infra/observability";
 import { createTestApp } from "../tests/helpers/test-app";
 
 describe("createApp global middleware stack", () => {
@@ -88,6 +90,7 @@ describe("createApp global middleware stack", () => {
     const app = createApp({
       env,
       logger: createLogger(env),
+      metrics: new NoopMetricsAdapter(),
       auth: {
         getSession: async () => null,
         hasPermission: async () => false,
@@ -151,5 +154,82 @@ describe("createApp global middleware stack", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("ok");
+  });
+
+  it("correlates requestId and traceparent into HTTP logs and skips SSE durations in createApp", async () => {
+    const lines: string[] = [];
+    const sink = new Writable({
+      write(chunk, _encoding, callback) {
+        lines.push(chunk.toString("utf8"));
+        callback();
+      },
+    });
+    const env = parseEnv({ NODE_ENV: "test", LOG_LEVEL: "info" });
+    const logger = createLogger(env, sink);
+    const metrics = new PromMetricsAdapter({ collectDefaultMetrics: false });
+    const ac = new AbortController();
+    cleanups.push(async () => {
+      ac.abort();
+    });
+
+    const app = createApp({
+      env,
+      logger,
+      metrics,
+      auth: {
+        getSession: async () => null,
+        hasPermission: async () => false,
+        updateProfile: async () => {
+          throw new Error("Not implemented");
+        },
+        handler: async () => new Response("event: ping\ndata: {}\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      },
+      checkDb: async () => {},
+      isShuttingDown: () => false,
+      shutdownSignal: ac.signal,
+    });
+
+    const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const rootRes = await app.request("/", {
+      headers: {
+        "X-Request-Id": "req-app-trace",
+        "traceparent": `00-${traceId}-00f067aa0ba902b7-01`,
+      },
+    });
+
+    expect(rootRes.status).toBe(200);
+    expect(rootRes.headers.get("X-Request-Id")).toBe("req-app-trace");
+    expect(rootRes.headers.get("traceparent")).toBeNull();
+
+    const sseRes = await app.request("/api/auth/stream-stub", {
+      headers: {
+        traceparent: "bad-header",
+      },
+    });
+    expect(sseRes.status).toBe(200);
+    await sseRes.text();
+
+    const entries = lines
+      .join("")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0].reqId).toBe("req-app-trace");
+    expect(entries[0].trace_id).toBe(traceId);
+    expect(entries[0].span_id).toMatch(/^[0-9a-f]{16}$/);
+
+    expect(entries[1].trace_id).toMatch(/^[0-9a-f]{32}$/);
+    expect(entries[1].span_id).toMatch(/^[0-9a-f]{16}$/);
+
+    const metricsRes = await app.request("/metrics");
+    const metricsBody = await metricsRes.text();
+    expect(metricsBody).toContain("http_requests_total{method=\"GET\",route=\"/api/auth/*\",status=\"200\"} 1");
+    expect(metricsBody).not.toContain("http_request_duration_seconds_count{method=\"GET\",route=\"/api/auth/*\"");
   });
 });
