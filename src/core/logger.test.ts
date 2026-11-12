@@ -33,6 +33,7 @@ describe("core logger", () => {
       LOG_LEVEL: "info",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
       BETTER_AUTH_URL: "https://api.example.com",
+      S3_BUCKET: "prod-uploads",
     });
     const sink = createMemoryLogStream();
     const logger = createLogger(env, sink.stream);

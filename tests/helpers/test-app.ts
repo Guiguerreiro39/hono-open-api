@@ -1,6 +1,9 @@
 import type { AuthUser } from "@/core/ports/auth";
 import type { PlatformDeps } from "@/core/types";
 import type { EnvOverrides } from "@/env";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { testClient } from "hono/testing";
 
@@ -38,19 +41,60 @@ function extractCookieHeader(headers: Headers): string {
     .join("; ");
 }
 
+function isWithinTempDir(targetDir: string): boolean {
+  const resolvedTemp = path.resolve(os.tmpdir());
+  const resolvedTarget = path.resolve(targetDir);
+  const rel = path.relative(resolvedTemp, resolvedTarget);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
 export async function createTestApp(
   envOverrides?: EnvOverrides,
   depsOverrides?: Partial<PlatformDeps>,
 ) {
-  const env = parseEnv({
-    NODE_ENV: "test",
-    DATABASE_URL: ":memory:",
-    LOG_LEVEL: "silent",
-    ...envOverrides,
-  });
+  let autoTempStorageDir: string | undefined;
+  let storageLocalDir = envOverrides?.STORAGE_LOCAL_DIR;
+  if (
+    envOverrides?.STORAGE_DRIVER === "local"
+    && (typeof storageLocalDir !== "string" || storageLocalDir.trim() === "")
+  ) {
+    autoTempStorageDir = await mkdtemp(path.join(os.tmpdir(), "hono-test-storage-"));
+    storageLocalDir = autoTempStorageDir;
+  }
+
+  let env;
+  try {
+    env = parseEnv({
+      NODE_ENV: "test",
+      DATABASE_URL: ":memory:",
+      LOG_LEVEL: "silent",
+      ...envOverrides,
+      ...(storageLocalDir !== undefined ? { STORAGE_LOCAL_DIR: storageLocalDir } : {}),
+    });
+  }
+  catch (err) {
+    if (autoTempStorageDir) {
+      await rm(autoTempStorageDir, { recursive: true, force: true }).catch(() => {});
+    }
+    throw err;
+  }
+
+  const tempStorageDir = autoTempStorageDir
+    ?? (env.STORAGE_DRIVER === "local" && isWithinTempDir(env.STORAGE_LOCAL_DIR)
+      ? path.resolve(env.STORAGE_LOCAL_DIR)
+      : undefined);
 
   const container = createContainer(env);
-  await migrateDatabase(container.db);
+  try {
+    await migrateDatabase(container.db);
+  }
+  catch (err) {
+    await container.close();
+    if (tempStorageDir) {
+      await rm(tempStorageDir, { recursive: true, force: true }).catch(() => {});
+    }
+    throw err;
+  }
 
   const deps: PlatformDeps = {
     ...container,
@@ -125,6 +169,9 @@ export async function createTestApp(
       }),
     cleanup: async () => {
       await container.close();
+      if (tempStorageDir) {
+        await rm(tempStorageDir, { recursive: true, force: true });
+      }
     },
   };
 }

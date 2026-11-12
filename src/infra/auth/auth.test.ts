@@ -23,6 +23,7 @@ describe("better auth adapter", () => {
       CORS_ORIGINS: "https://app.example.com",
       BETTER_AUTH_URL: "https://api.example.com",
       BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
+      S3_BUCKET: "prod-uploads",
     });
     const { db, close } = createDb(prodEnv);
     cleanups.push(close);
