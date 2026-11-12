@@ -22,6 +22,8 @@ describe("parseEnv", () => {
     expect(env.PORT).toBe(9999);
     expect(env.CORS_ORIGINS).toEqual(["http://localhost:3000"]);
     expect(env.READINESS_TIMEOUT_MS).toBe(2000);
+    expect(env.BETTER_AUTH_SECRET).toBe("secret");
+    expect(env.BETTER_AUTH_URL).toBe("http://localhost:9999");
     expect(process.env).toEqual(beforeSnapshot);
 
     const defaultEnv = parseEnv();
@@ -51,27 +53,36 @@ describe("parseEnv", () => {
   });
 
   it("requires DATABASE_AUTH_TOKEN in production only for libsql:// and https:// URLs", () => {
+    const validProdAuth = {
+      BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
+      BETTER_AUTH_URL: "https://api.example.com",
+    };
+
     expect(() => parseEnv({
       NODE_ENV: "production",
       DATABASE_URL: undefined,
+      ...validProdAuth,
     })).toThrow(EnvValidationError);
 
     expect(() => parseEnv({
       NODE_ENV: "production",
       DATABASE_URL: "libsql://my-db.turso.io",
       DATABASE_AUTH_TOKEN: undefined,
+      ...validProdAuth,
     })).toThrow(EnvValidationError);
 
     expect(() => parseEnv({
       NODE_ENV: "production",
       DATABASE_URL: "https://my-db.turso.io",
       DATABASE_AUTH_TOKEN: "",
+      ...validProdAuth,
     })).toThrow(EnvValidationError);
 
     const remoteProd = parseEnv({
       NODE_ENV: "production",
       DATABASE_URL: "libsql://my-db.turso.io",
       DATABASE_AUTH_TOKEN: "secret-token",
+      ...validProdAuth,
     });
     expect(remoteProd.LOG_LEVEL).toBe("info");
     expect(remoteProd.CORS_ORIGINS).toEqual([]);
@@ -81,6 +92,7 @@ describe("parseEnv", () => {
       NODE_ENV: "production",
       DATABASE_URL: "file:/data/app.db",
       DATABASE_AUTH_TOKEN: undefined,
+      ...validProdAuth,
     });
     expect(fileProd.DATABASE_URL).toBe("file:/data/app.db");
 
@@ -88,8 +100,47 @@ describe("parseEnv", () => {
       NODE_ENV: "production",
       DATABASE_URL: "http://sqld:8080",
       DATABASE_AUTH_TOKEN: undefined,
+      ...validProdAuth,
     });
     expect(localHttpProd.DATABASE_URL).toBe("http://sqld:8080");
+  });
+
+  it("rejects weak BETTER_AUTH_SECRET and missing or invalid BETTER_AUTH_URL in production", () => {
+    const baseProd = {
+      NODE_ENV: "production" as const,
+      DATABASE_URL: "file:/data/app.db",
+      BETTER_AUTH_SECRET: "a-very-long-and-secure-production-secret-32chars",
+      BETTER_AUTH_URL: "https://api.example.com",
+    };
+
+    expect(() => parseEnv({
+      ...baseProd,
+      BETTER_AUTH_SECRET: undefined,
+    })).toThrow(EnvValidationError);
+
+    expect(() => parseEnv({
+      ...baseProd,
+      BETTER_AUTH_SECRET: "secret",
+    })).toThrow(EnvValidationError);
+
+    expect(() => parseEnv({
+      ...baseProd,
+      BETTER_AUTH_SECRET: "short-secret-under-32-chars",
+    })).toThrow(EnvValidationError);
+
+    expect(() => parseEnv({
+      ...baseProd,
+      BETTER_AUTH_URL: undefined,
+    })).toThrow(EnvValidationError);
+
+    expect(() => parseEnv({
+      ...baseProd,
+      BETTER_AUTH_URL: "ftp://api.example.com",
+    })).toThrow(EnvValidationError);
+
+    const parsed = parseEnv(baseProd);
+    expect(parsed.BETTER_AUTH_SECRET).toBe(baseProd.BETTER_AUTH_SECRET);
+    expect(parsed.BETTER_AUTH_URL).toBe(baseProd.BETTER_AUTH_URL);
   });
 
   it("writes invalid startup errors to stderr and exits cleanly", () => {

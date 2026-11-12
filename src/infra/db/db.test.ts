@@ -13,7 +13,7 @@ import { timestamps, uuidPk } from "@/infra/db/helpers";
 import { migrateDatabase } from "@/infra/db/migrate";
 
 describe("database kernel", () => {
-  it("runs clean empty baseline migrations on :memory: and probes via ping", async () => {
+  it("runs baseline auth migrations on :memory: and probes via ping", async () => {
     const env = parseEnv({ NODE_ENV: "test", DATABASE_URL: ":memory:" });
     const { db, client, ping, close } = createDb(env);
 
@@ -21,9 +21,32 @@ describe("database kernel", () => {
     await expect(ping()).resolves.toBeUndefined();
 
     const tables = await client.execute(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'",
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('__drizzle_migrations', 'user', 'session', 'account', 'verification') ORDER BY name",
     );
-    expect(tables.rows).toHaveLength(1);
+    expect(tables.rows.map(row => row.name)).toEqual([
+      "__drizzle_migrations",
+      "account",
+      "session",
+      "user",
+      "verification",
+    ]);
+
+    const userColumns = await client.execute("PRAGMA table_info('user')");
+    const userColNames = userColumns.rows.map(row => row.name);
+    expect(userColNames).toEqual(expect.arrayContaining([
+      "id",
+      "email",
+      "email_verified",
+      "role",
+      "banned",
+      "ban_reason",
+      "ban_expires",
+      "created_at",
+      "updated_at",
+    ]));
+
+    const sessionColumns = await client.execute("PRAGMA table_info('session')");
+    expect(sessionColumns.rows.map(row => row.name)).toContain("impersonated_by");
 
     await close();
     await expect(ping()).rejects.toThrow();
