@@ -96,6 +96,15 @@ describe("createApp global middleware stack", () => {
         },
         handler: async () => new Response("Not implemented", { status: 501 }),
       },
+      taskRepository: {
+        list: async () => ({ data: [], meta: { nextCursor: null, hasMore: false } }),
+        findById: async () => null,
+        create: async () => {
+          throw new Error("Not implemented");
+        },
+        update: async () => null,
+        delete: async () => false,
+      },
       checkDb: () => new Promise(() => {}),
       isShuttingDown: () => false,
       shutdownSignal: ac.signal,
