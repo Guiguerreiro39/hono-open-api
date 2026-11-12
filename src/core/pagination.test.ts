@@ -5,6 +5,7 @@ import { BadRequestError } from "@/core/errors";
 import {
   buildPaginatedResponse,
   decodeCursor,
+  decodeTimestampCursor,
   encodeCursor,
   PaginationQuerySchema,
 } from "@/core/pagination";
@@ -70,5 +71,29 @@ describe("core cursor pagination", () => {
     });
     expect(() => PaginationQuerySchema.parse({ limit: "0" })).toThrow();
     expect(() => PaginationQuerySchema.parse({ limit: "101" })).toThrow();
+  });
+
+  it("decodes valid integer timestamp cursors and rejects non-integer or out-of-Date-range timestamps", () => {
+    const valid = encodeCursor({ v: 1731373415123, id: "row-1" });
+    expect(decodeTimestampCursor(valid)).toEqual({
+      createdAt: new Date(1731373415123),
+      id: "row-1",
+    });
+
+    const maxBoundary = encodeCursor({ v: 8.64e15, id: "row-max" });
+    expect(decodeTimestampCursor(maxBoundary).createdAt.getTime()).toBe(8.64e15);
+
+    const invalidCases = [
+      encodeCursor({ v: "2026-11-12T00:00:00.000Z", id: "str" }),
+      encodeCursor({ v: 1.5, id: "float" }),
+      encodeCursor({ v: 8.64e15 + 1, id: "over-max" }),
+      encodeCursor({ v: -8.64e15 - 1, id: "under-min" }),
+      encodeCursor({ v: Number.MAX_SAFE_INTEGER, id: "max-safe" }),
+      encodeCursor({ v: -Number.MAX_SAFE_INTEGER, id: "min-safe" }),
+    ];
+
+    for (const token of invalidCases) {
+      expect(() => decodeTimestampCursor(token)).toThrow(BadRequestError);
+    }
   });
 });

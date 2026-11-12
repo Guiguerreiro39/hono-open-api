@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AUTH_SECURITY } from "@/core/openapi";
+import { encodeCursor } from "@/core/pagination";
 import { files as filesTable } from "@/infra/db/schema";
 import { filesPrunePendingJob } from "@/modules/files/files.jobs";
 import { createTestApp } from "../../../tests/helpers/test-app";
@@ -392,6 +393,17 @@ describe("files feature module (/api/v1/files)", () => {
     }, { headers: alice.headers });
     expect(badCursor.status).toBe(400);
 
+    // Out-of-range integer timestamp cursors -> 400 INVALID_CURSOR
+    for (const outOfRange of [Number.MAX_SAFE_INTEGER, -Number.MAX_SAFE_INTEGER]) {
+      const oorRes = await ctx.client.api.v1.files.$get({
+        query: { cursor: encodeCursor({ v: outOfRange, id: crypto.randomUUID() }) },
+      }, { headers: alice.headers });
+      expect(oorRes.status).toBe(400);
+      expect(await oorRes.json()).toMatchObject({
+        error: { code: "INVALID_CURSOR" },
+      });
+    }
+
     // Non-admin cross-user query -> 403; foreign IDs -> 404
     expect((await ctx.client.api.v1.files.$get({ query: { scope: "all" } }, { headers: alice.headers })).status).toBe(403);
     expect((await ctx.client.api.v1.files.$get({ query: { userId: bob.user.id } }, { headers: alice.headers })).status).toBe(403);
@@ -435,6 +447,62 @@ describe("files feature module (/api/v1/files)", () => {
       expect(signedFetch.status).toBe(200);
       expect(signedFetch.headers.get("content-disposition")).toBe("attachment; filename=\"bob.txt\"");
       expect(await signedFetch.text()).toBe("bob-secret");
+    }
+  });
+
+  it("uploads, downloads, and serves signed URLs for non-ASCII filenames (> U+00FF) with valid RFC 5987 Content-Disposition", async () => {
+    const ctx = await createTestApp();
+    cleanups.push(ctx.cleanup);
+
+    const user = await ctx.seedUser();
+    const unicodeName = "日本語🚀.png";
+    const uploadRes = await ctx.client.api.v1.files.$post({
+      form: { file: new File([VALID_PNG_BYTES], unicodeName, { type: "image/png" }) },
+    }, { headers: user.headers });
+    expect(uploadRes.status).toBe(201);
+    if (uploadRes.status !== 201) {
+      throw new Error(`Expected 201, got ${uploadRes.status}`);
+    }
+    const uploaded = await uploadRes.json();
+    expect(uploaded.originalName).toBe(unicodeName);
+
+    const expectedDisposition = `attachment; filename="____.png"; filename*=UTF-8''${encodeURIComponent(unicodeName)}`;
+
+    const dlRes = await ctx.client.api.v1.files[":id"].download.$get({
+      param: { id: uploaded.id },
+    }, { headers: user.headers });
+    expect(dlRes.status).toBe(200);
+    expect(dlRes.headers.get("content-disposition")).toBe(expectedDisposition);
+    expect(new Uint8Array(await dlRes.arrayBuffer())).toEqual(VALID_PNG_BYTES);
+
+    const urlRes = await ctx.client.api.v1.files[":id"].url.$get({
+      param: { id: uploaded.id },
+    }, { headers: user.headers });
+    expect(urlRes.status).toBe(200);
+    if (urlRes.status !== 200) {
+      throw new Error(`Expected 200, got ${urlRes.status}`);
+    }
+    const { url } = await urlRes.json();
+    const signedFetch = await ctx.app.request(url);
+    expect(signedFetch.status).toBe(200);
+    expect(signedFetch.headers.get("content-disposition")).toBe(expectedDisposition);
+    expect(new Uint8Array(await signedFetch.arrayBuffer())).toEqual(VALID_PNG_BYTES);
+
+    // Non-ASCII filename with RFC 5987 reserved characters (', (, )) percent-encodes them properly
+    const rfcName = "résumé (v1) 'final'.png";
+    const rfcRes = await ctx.client.api.v1.files.$post({
+      form: { file: new File([VALID_PNG_BYTES], rfcName, { type: "image/png" }) },
+    }, { headers: user.headers });
+    expect(rfcRes.status).toBe(201);
+    if (rfcRes.status === 201) {
+      const rfcFile = await rfcRes.json();
+      const rfcDl = await ctx.client.api.v1.files[":id"].download.$get({
+        param: { id: rfcFile.id },
+      }, { headers: user.headers });
+      expect(rfcDl.status).toBe(200);
+      expect(rfcDl.headers.get("content-disposition")).toBe(
+        "attachment; filename=\"r_sum_ (v1) 'final'.png\"; filename*=UTF-8''r%C3%A9sum%C3%A9%20%28v1%29%20%27final%27.png",
+      );
     }
   });
 

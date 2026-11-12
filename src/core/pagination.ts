@@ -53,6 +53,29 @@ export function decodeCursor(token: string): CursorPayload {
   return result.data;
 }
 
+export interface TimestampCursor {
+  createdAt: Date;
+  id: string;
+}
+
+/** Decodes a keyset cursor whose `v` field is an integer Unix epoch millisecond timestamp within JS `Date` range. */
+export function decodeTimestampCursor(token: string): TimestampCursor {
+  const decoded = decodeCursor(token);
+  if (typeof decoded.v !== "number" || !Number.isInteger(decoded.v)) {
+    throw new BadRequestError("Invalid pagination cursor", { code: "INVALID_CURSOR" });
+  }
+
+  const createdAt = new Date(decoded.v);
+  if (!Number.isFinite(createdAt.getTime())) {
+    throw new BadRequestError("Invalid pagination cursor", { code: "INVALID_CURSOR" });
+  }
+
+  return {
+    createdAt,
+    id: decoded.id,
+  };
+}
+
 export function createPaginatedResponseSchema<T extends z.ZodTypeAny>(itemSchema: T) {
   return z.object({
     data: z.array(itemSchema),
