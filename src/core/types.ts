@@ -7,6 +7,7 @@ import type { AuthPort, AuthSession, AuthUser } from "@/core/ports/auth";
 import type { CachePort } from "@/core/ports/cache";
 import type { MetricsPort } from "@/core/ports/metrics";
 import type { RateLimiterPort } from "@/core/ports/rate-limit";
+import type { StoragePort } from "@/core/ports/storage";
 import type { Env } from "@/env";
 
 export interface PlatformDeps {
@@ -16,6 +17,7 @@ export interface PlatformDeps {
   auth: AuthPort;
   cache: CachePort;
   rateLimiter: RateLimiterPort;
+  storage: StoragePort;
   checkDb: () => Promise<void>;
   checkRedis?: () => Promise<void>;
   isShuttingDown: () => boolean;

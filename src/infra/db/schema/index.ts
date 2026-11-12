@@ -7,3 +7,5 @@ export {
   userRelations,
   verification,
 } from "./auth";
+
+export { tasks, tasksRelations } from "./tasks";

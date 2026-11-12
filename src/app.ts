@@ -1,4 +1,5 @@
 import type { PlatformDeps } from "@/core/types";
+import type { TaskRepository } from "@/modules/tasks/tasks.repository";
 import { $ } from "@hono/zod-openapi";
 import { Scalar } from "@scalar/hono-api-reference";
 import { bodyLimit } from "hono/body-limit";
@@ -8,7 +9,7 @@ import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
 import { timeout } from "hono/timeout";
 
-import { createErrorHandler, notFoundHandler, PayloadTooLargeError } from "@/core/errors";
+import { createErrorHandler, getRequestId, notFoundHandler, PayloadTooLargeError } from "@/core/errors";
 import { createRouter } from "@/core/http";
 import { createHttpLogger } from "@/core/logger";
 import { metricsMiddleware } from "@/core/observability/metrics";
@@ -17,9 +18,26 @@ import { createOpenAPIDocumentConfig, registerOpenAPISecuritySchemes } from "@/c
 import { createApiRateLimiter, createAuthRateLimiter } from "@/core/rate-limit";
 import { createAuthModule } from "@/modules/auth/auth.index";
 import { createSystemModule } from "@/modules/system/system.index";
+import { createTasksModule } from "@/modules/tasks/tasks.index";
 
 const DEFAULT_BODY_LIMIT_BYTES = 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+function isSignedStoragePath(path: string): boolean {
+  return path === "/_storage" || path.startsWith("/_storage/");
+}
+
+const defaultBodyLimit = bodyLimit({
+  maxSize: DEFAULT_BODY_LIMIT_BYTES,
+  onError: () => {
+    throw new PayloadTooLargeError("Request body exceeds 1 MB limit");
+  },
+});
+
+const defaultTimeout = timeout(
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  () => new HTTPException(408, { message: "Request timeout" }),
+);
 
 const defaultSecureHeaders = secureHeaders();
 const referenceSecureHeaders = secureHeaders({
@@ -33,7 +51,7 @@ const referenceSecureHeaders = secureHeaders({
   },
 });
 
-export function createApp(deps: PlatformDeps) {
+export function createApp(deps: PlatformDeps & { taskRepository: TaskRepository }) {
   const base = $(
     createRouter()
       .use("*", requestId())
@@ -47,13 +65,18 @@ export function createApp(deps: PlatformDeps) {
         }
         return defaultSecureHeaders(c, next);
       })
-      .use("*", bodyLimit({
-        maxSize: DEFAULT_BODY_LIMIT_BYTES,
-        onError: () => {
-          throw new PayloadTooLargeError("Request body exceeds 1 MB limit");
-        },
-      }))
-      .use("*", timeout(DEFAULT_REQUEST_TIMEOUT_MS, () => new HTTPException(408, { message: "Request timeout" }))),
+      .use("*", async (c, next) => {
+        if (isSignedStoragePath(c.req.path)) {
+          return next();
+        }
+        return defaultBodyLimit(c, next);
+      })
+      .use("*", async (c, next) => {
+        if (isSignedStoragePath(c.req.path)) {
+          return next();
+        }
+        return defaultTimeout(c, next);
+      }),
   )
     .notFound(notFoundHandler)
     .onError(createErrorHandler(deps.logger));
@@ -76,14 +99,29 @@ export function createApp(deps: PlatformDeps) {
         }),
       )
       .use("/api/auth/*", createAuthRateLimiter(deps))
-      .on(["POST", "GET"], "/api/auth/*", c => deps.auth.handler(c.req.raw)),
+      .on(["POST", "GET"], "/api/auth/*", c => deps.auth.handler(c.req.raw))
+      .on(["PUT", "GET"], "/_storage/*", async (c) => {
+        if (!deps.storage.handleSignedRequest) {
+          return c.json({
+            error: {
+              code: "NOT_FOUND",
+              message: "Not found",
+              requestId: getRequestId(c),
+            },
+          }, 404);
+        }
+        return deps.storage.handleSignedRequest(c.req.raw, {
+          requestId: getRequestId(c),
+        });
+      }),
   );
 
   const apiV1 = $(
     createRouter()
       .use("*", createApiRateLimiter(deps)),
   )
-    .route("/", createAuthModule(deps));
+    .route("/", createAuthModule(deps))
+    .route("/", createTasksModule(deps));
 
   return withDocsAndAuth
     .route("/", createSystemModule(deps))
