@@ -88,10 +88,18 @@ describe("system module", () => {
 
   it("returns 503 on GET /ready when DB probe times out or app is shutting down", async () => {
     let shuttingDown = false;
+    let dbCheckCalls = 0;
+    let redisCheckCalls = 0;
     const slowCtx = await createTestApp(
-      { READINESS_TIMEOUT_MS: 20 },
+      { READINESS_TIMEOUT_MS: 20, REDIS_URL: "redis://localhost:6379" },
       {
-        checkDb: () => new Promise(() => {}),
+        checkDb: () => {
+          dbCheckCalls += 1;
+          return new Promise(() => {});
+        },
+        checkRedis: async () => {
+          redisCheckCalls += 1;
+        },
         isShuttingDown: () => shuttingDown,
       },
     );
@@ -102,12 +110,35 @@ describe("system module", () => {
     const timeoutBody = await timeoutRes.json();
     expect(timeoutBody.status).toBe("unhealthy");
     expect(timeoutBody.checks.db.status).toBe("error");
+    expect(dbCheckCalls).toBe(1);
+    expect(redisCheckCalls).toBe(1);
 
     shuttingDown = true;
     const shutdownRes = await slowCtx.client.ready.$get();
     expect(shutdownRes.status).toBe(503);
     const shutdownBody = await shutdownRes.json();
-    expect(shutdownBody.status).toBe("unhealthy");
+    expect(shutdownBody).toMatchObject({
+      status: "unhealthy",
+      checks: {
+        db: { status: "skipped" },
+        redis: { status: "skipped" },
+      },
+    });
+    expect(dbCheckCalls).toBe(1);
+    expect(redisCheckCalls).toBe(1);
+  });
+
+  it("defaults optional PlatformDeps.isShuttingDown to false when omitted in createTestApp", async () => {
+    const ctx = await createTestApp(undefined, {
+      isShuttingDown: undefined,
+      shutdownSignal: undefined,
+    });
+    cleanups.push(ctx.cleanup);
+
+    const res = await ctx.client.ready.$get();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe("ok");
   });
 
   it("returns 200 ok when REDIS_URL is configured and Redis probe succeeds, and 200 degraded on Redis failure or timeout", async () => {

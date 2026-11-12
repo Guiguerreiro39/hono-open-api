@@ -120,6 +120,8 @@ const RawEnvSchema = z.object({
   WORKER_EMBEDDED: z.preprocess(parseBooleanEnv, z.boolean().default(false)),
   WORKER_CONCURRENCY: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(5)),
   WORKER_SHUTDOWN_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(10_000)),
+  SHUTDOWN_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(10_000)),
+  SHUTDOWN_DRAIN_DELAY_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).default(0)),
   BETTER_AUTH_SECRET: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
   BETTER_AUTH_URL: z.preprocess(
     emptyToUndefined,
@@ -177,6 +179,8 @@ export interface Env {
   WORKER_EMBEDDED: boolean;
   WORKER_CONCURRENCY: number;
   WORKER_SHUTDOWN_TIMEOUT_MS: number;
+  SHUTDOWN_TIMEOUT_MS: number;
+  SHUTDOWN_DRAIN_DELAY_MS: number;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
   REDIS_URL?: string;
@@ -346,6 +350,8 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     WORKER_EMBEDDED: input.WORKER_EMBEDDED,
     WORKER_CONCURRENCY: input.WORKER_CONCURRENCY,
     WORKER_SHUTDOWN_TIMEOUT_MS: input.WORKER_SHUTDOWN_TIMEOUT_MS,
+    SHUTDOWN_TIMEOUT_MS: input.SHUTDOWN_TIMEOUT_MS,
+    SHUTDOWN_DRAIN_DELAY_MS: input.SHUTDOWN_DRAIN_DELAY_MS,
     BETTER_AUTH_SECRET: betterAuthSecret,
     BETTER_AUTH_URL: betterAuthUrl,
     REDIS_URL: input.REDIS_URL,

@@ -406,4 +406,34 @@ describe("parseEnv", () => {
     expect(() => parseEnv({ NODE_ENV: "test", MAX_SSE_CONNECTIONS: "1.5" })).toThrow(EnvValidationError);
     expect(() => parseEnv({ NODE_ENV: "test", MAX_SSE_CONNECTIONS: "abc" })).toThrow(EnvValidationError);
   });
+
+  it("parses SHUTDOWN_TIMEOUT_MS and SHUTDOWN_DRAIN_DELAY_MS with validation", () => {
+    const defaults = parseEnv({ NODE_ENV: "test" });
+    expect(defaults.SHUTDOWN_TIMEOUT_MS).toBe(10_000);
+    expect(defaults.SHUTDOWN_DRAIN_DELAY_MS).toBe(0);
+
+    const configured = parseEnv({
+      NODE_ENV: "production",
+      DATABASE_URL: "file:prod.db",
+      BETTER_AUTH_SECRET: "a-very-strong-secret-with-more-than-32-chars",
+      BETTER_AUTH_URL: "https://api.example.com",
+      REDIS_URL: "redis://redis:6379",
+      S3_BUCKET: "prod-uploads",
+      SHUTDOWN_TIMEOUT_MS: "15000",
+      SHUTDOWN_DRAIN_DELAY_MS: "2500",
+    });
+    expect(configured.SHUTDOWN_TIMEOUT_MS).toBe(15_000);
+    expect(configured.SHUTDOWN_DRAIN_DELAY_MS).toBe(2500);
+
+    expect(parseEnv({ NODE_ENV: "test", SHUTDOWN_TIMEOUT_MS: "" }).SHUTDOWN_TIMEOUT_MS).toBe(10_000);
+    expect(parseEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_DELAY_MS: "" }).SHUTDOWN_DRAIN_DELAY_MS).toBe(0);
+    expect(parseEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_DELAY_MS: "0" }).SHUTDOWN_DRAIN_DELAY_MS).toBe(0);
+
+    expect(() => parseEnv({ NODE_ENV: "test", SHUTDOWN_TIMEOUT_MS: "0" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", SHUTDOWN_TIMEOUT_MS: "-1" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", SHUTDOWN_TIMEOUT_MS: "abc" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_DELAY_MS: "-1" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_DELAY_MS: "1.5" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_DELAY_MS: "abc" })).toThrow(EnvValidationError);
+  });
 });

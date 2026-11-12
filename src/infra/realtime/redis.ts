@@ -205,4 +205,13 @@ export class RedisPubSubAdapter implements PubSubPort {
     await quitRedisClient(this.sub);
     this.sub.off("error", this.onSubError);
   }
+
+  forceDisconnect(): void {
+    this.closed = true;
+    this.emitter.removeAllListeners();
+    this.pub.off("error", this.onPubError);
+    this.sub.off("message", this.onMessage);
+    this.sub.disconnect();
+    this.sub.off("error", this.onSubError);
+  }
 }

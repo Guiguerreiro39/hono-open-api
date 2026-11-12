@@ -10,7 +10,7 @@ export interface SystemModuleDeps {
   env: Pick<Env, "APP_NAME" | "READINESS_TIMEOUT_MS" | "METRICS_ENABLED" | "METRICS_TOKEN" | "REDIS_URL">;
   checkDb: PlatformDeps["checkDb"];
   checkRedis?: PlatformDeps["checkRedis"];
-  isShuttingDown: PlatformDeps["isShuttingDown"];
+  isShuttingDown?: PlatformDeps["isShuttingDown"];
   metrics: MetricsPort;
 }
 
@@ -83,7 +83,7 @@ export function createSystemHandlers(deps: SystemModuleDeps) {
   const ready: AppRouteHandler<typeof readyRoute> = async (c) => {
     const timestamp = new Date().toISOString();
 
-    if (deps.isShuttingDown()) {
+    if (deps.isShuttingDown?.()) {
       return c.json({
         status: "unhealthy" as const,
         timestamp,
