@@ -10,8 +10,8 @@ import type {
 } from "@/modules/files/files.repository";
 
 import { and, asc, desc, eq, isNotNull, lt, lte, or } from "drizzle-orm";
-import { BadRequestError, ValidationError } from "@/core/errors";
-import { buildPaginatedResponse, decodeCursor } from "@/core/pagination";
+import { ValidationError } from "@/core/errors";
+import { buildPaginatedResponse, decodeTimestampCursor } from "@/core/pagination";
 import { normalizeDbError } from "@/infra/db/errors";
 import { files } from "@/infra/db/schema";
 
@@ -75,14 +75,10 @@ export function createDrizzleFileRepository(db: AppDatabase): FileRepository {
       }
 
       if (params.cursor !== undefined) {
-        const decoded = decodeCursor(params.cursor);
-        if (typeof decoded.v !== "number" || !Number.isInteger(decoded.v)) {
-          throw new BadRequestError("Invalid pagination cursor", { code: "INVALID_CURSOR" });
-        }
-        const cursorDate = new Date(decoded.v);
+        const { createdAt, id } = decodeTimestampCursor(params.cursor);
         const keyset = or(
-          lt(files.createdAt, cursorDate),
-          and(eq(files.createdAt, cursorDate), lt(files.id, decoded.id)),
+          lt(files.createdAt, createdAt),
+          and(eq(files.createdAt, createdAt), lt(files.id, id)),
         );
         if (keyset) {
           conditions.push(keyset);

@@ -10,8 +10,8 @@ import type {
 } from "@/modules/tasks/tasks.repository";
 
 import { and, desc, eq, lt, or } from "drizzle-orm";
-import { BadRequestError, ValidationError } from "@/core/errors";
-import { buildPaginatedResponse, decodeCursor } from "@/core/pagination";
+import { ValidationError } from "@/core/errors";
+import { buildPaginatedResponse, decodeTimestampCursor } from "@/core/pagination";
 import { normalizeDbError } from "@/infra/db/errors";
 import { tasks } from "@/infra/db/schema";
 
@@ -67,14 +67,10 @@ export function createDrizzleTaskRepository(db: AppDatabase): TaskRepository {
       }
 
       if (params.cursor !== undefined) {
-        const decoded = decodeCursor(params.cursor);
-        if (typeof decoded.v !== "number" || !Number.isInteger(decoded.v)) {
-          throw new BadRequestError("Invalid pagination cursor", { code: "INVALID_CURSOR" });
-        }
-        const cursorDate = new Date(decoded.v);
+        const { createdAt, id } = decodeTimestampCursor(params.cursor);
         const keyset = or(
-          lt(tasks.createdAt, cursorDate),
-          and(eq(tasks.createdAt, cursorDate), lt(tasks.id, decoded.id)),
+          lt(tasks.createdAt, createdAt),
+          and(eq(tasks.createdAt, createdAt), lt(tasks.id, id)),
         );
         if (keyset) {
           conditions.push(keyset);

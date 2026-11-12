@@ -19,6 +19,7 @@ import {
 const DEFAULT_EXPIRES_IN_SECONDS = 900;
 const DEFAULT_MAX_PRESIGN_BYTES = 104_857_600;
 const SHA256_HEX_REGEX = /^[0-9a-f]{64}$/;
+const SAFE_HEADER_VALUE_REGEX = /^[\t\x20-\x7E\x80-\xFF]*$/;
 
 export interface SignedStorageHandlerOptions {
   storage: Pick<StoragePort, "put" | "get" | "head">;
@@ -211,6 +212,10 @@ export function createSignedStorageHandlers(
 
       if (Date.now() >= exp) {
         return jsonError(403, "FORBIDDEN", "Signed storage URL has expired", requestId);
+      }
+
+      if (!SAFE_HEADER_VALUE_REGEX.test(ct) || !SAFE_HEADER_VALUE_REGEX.test(cd)) {
+        return jsonError(400, "BAD_REQUEST", "Invalid signed response header parameter", requestId);
       }
 
       const [meta, stream] = await Promise.all([

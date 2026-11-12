@@ -205,4 +205,29 @@ describe("s3StorageAdapter and storage factory", () => {
     await ctx.cleanup();
     expect(existsSync(storageDir)).toBe(false);
   });
+
+  it("rejects non-ByteString or control-character response headers on signed GET without throwing TypeError", async () => {
+    const ctx = await createTestApp({ STORAGE_DRIVER: "memory" });
+    try {
+      const key = "files/user-1/unicode.png";
+      await ctx.container.storage.put(key, new Uint8Array([1, 2, 3]), { contentType: "image/png" });
+
+      for (const badDisposition of [
+        "attachment; filename=\"日本語🚀.png\"",
+        "attachment; filename=\"bad.png\"\r\nX-Injected: 1",
+      ]) {
+        const signedUrl = await ctx.container.storage.getSignedGetUrl(key, {
+          responseContentDisposition: badDisposition,
+        });
+        const res = await ctx.app.request(signedUrl);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({
+          error: { code: "BAD_REQUEST" },
+        });
+      }
+    }
+    finally {
+      await ctx.cleanup();
+    }
+  });
 });

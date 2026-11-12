@@ -201,6 +201,15 @@ export function registerTaskRepositoryContractSuite(
           cursor: encodeCursor({ v: "not-a-timestamp", id: crypto.randomUUID() }),
         }),
       ).rejects.toBeInstanceOf(BadRequestError);
+
+      for (const outOfRange of [Number.MAX_SAFE_INTEGER, -Number.MAX_SAFE_INTEGER, 1.5]) {
+        await expect(
+          ctx.repository.list({
+            userId,
+            cursor: encodeCursor({ v: outOfRange, id: crypto.randomUUID() }),
+          }),
+        ).rejects.toBeInstanceOf(BadRequestError);
+      }
     });
 
     it("normalizes foreign key constraint errors and cascades on user deletion", async () => {

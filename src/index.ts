@@ -65,8 +65,29 @@ export async function startApiRuntime(options: StartApiRuntimeOptions): Promise<
       if (server) {
         const activeServer = server;
         await new Promise<void>((resolve) => {
-          activeServer.close(() => resolve());
+          let closed = false;
+          let idleSweepTimer: ReturnType<typeof setInterval> | undefined;
+
+          const finish = () => {
+            closed = true;
+            if (idleSweepTimer) {
+              clearInterval(idleSweepTimer);
+              idleSweepTimer = undefined;
+            }
+            resolve();
+          };
+
+          activeServer.close(() => finish());
           activeServer.closeIdleConnections?.();
+
+          // Sockets finishing an aborted SSE stream become idle asynchronously after flush;
+          // sweep periodically until server.close() drains so keep-alive sockets don't stall shutdown.
+          if (!closed && activeServer.closeIdleConnections) {
+            idleSweepTimer = setInterval(() => {
+              activeServer.closeIdleConnections?.();
+            }, 25);
+            idleSweepTimer.unref();
+          }
         });
       }
 

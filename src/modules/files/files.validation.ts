@@ -43,9 +43,28 @@ export function sanitizeOriginalName(rawName: string): string {
   return base;
 }
 
+const PRINTABLE_ASCII_REGEX = /^[\x20-\x7E]+$/;
+
+function encodeRfc5987(value: string): string {
+  const wellFormed = typeof value.toWellFormed === "function" ? value.toWellFormed() : value;
+  return encodeURIComponent(wellFormed).replace(
+    /['()*]/g,
+    char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
 export function buildAttachmentDisposition(originalName: string): string {
   const safeName = sanitizeOriginalName(originalName);
-  return `attachment; filename="${safeName}"`;
+  if (PRINTABLE_ASCII_REGEX.test(safeName)) {
+    return `attachment; filename="${safeName}"`;
+  }
+
+  const asciiFallback = safeName.replace(/[^\x20-\x7E]/gu, "_").trim();
+  const fallback = !asciiFallback || asciiFallback === "." || asciiFallback === ".."
+    ? "file"
+    : asciiFallback;
+
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeRfc5987(safeName)}`;
 }
 
 function hasPrefix(bytes: Uint8Array, expected: readonly number[]): boolean {

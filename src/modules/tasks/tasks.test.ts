@@ -6,6 +6,7 @@ import { hc } from "hono/client";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { AUTH_SECURITY } from "@/core/openapi";
+import { encodeCursor } from "@/core/pagination";
 import { ListTasksQuerySchema } from "@/modules/tasks/tasks.routes";
 import { createSseReader } from "../../../tests/helpers/sse";
 import { createTestApp } from "../../../tests/helpers/test-app";
@@ -208,6 +209,17 @@ describe("tasks feature module (/api/v1/tasks)", () => {
     expect(await badCursorRes.json()).toMatchObject({
       error: { code: "INVALID_CURSOR" },
     });
+
+    // Out-of-range integer timestamp cursors -> 400 INVALID_CURSOR
+    for (const outOfRange of [Number.MAX_SAFE_INTEGER, -Number.MAX_SAFE_INTEGER]) {
+      const oorRes = await ctx.client.api.v1.tasks.$get({
+        query: { cursor: encodeCursor({ v: outOfRange, id: crypto.randomUUID() }) },
+      }, { headers: user.headers });
+      expect(oorRes.status).toBe(400);
+      expect(await oorRes.json()).toMatchObject({
+        error: { code: "INVALID_CURSOR" },
+      });
+    }
 
     // Limit out of bounds -> 422
     expect((await ctx.client.api.v1.tasks.$get({ query: { limit: "0" } }, { headers: user.headers })).status).toBe(422);

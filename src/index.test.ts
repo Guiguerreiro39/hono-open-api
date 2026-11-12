@@ -290,4 +290,53 @@ describe("api process lifecycle and drain order (src/index.ts)", () => {
     expect(serverClose).toHaveBeenCalledTimes(1);
     expect(serverContainer.client.closed).toBe(true);
   });
+
+  it("repeatedly sweeps idle keep-alive connections until server.close completes, then stops the interval", async () => {
+    vi.useFakeTimers();
+    const env = parseEnv({
+      NODE_ENV: "test",
+      DATABASE_URL: ":memory:",
+      LOG_LEVEL: "silent",
+      PORT: 0,
+      SHUTDOWN_TIMEOUT_MS: 2000,
+    });
+    const container = createContainer(env);
+    const proc = createTestProcessTarget();
+    const server = createFakeServer();
+
+    let closeCb: ((err?: Error) => void) | undefined;
+    server.close = vi.fn((cb?: (err?: Error) => void) => {
+      closeCb = cb;
+    });
+
+    let idleSweepCount = 0;
+    server.closeIdleConnections = vi.fn(() => {
+      idleSweepCount += 1;
+      // Simulate an SSE keep-alive socket finishing its flush and transitioning to idle after 2 ticks
+      if (idleSweepCount === 3) {
+        closeCb?.();
+      }
+    });
+
+    const runtime = await startApiRuntime({
+      env,
+      container,
+      processTarget: proc.target,
+      serveFn: () => server,
+    });
+    cleanups.push(async () => {
+      runtime.lifecycle.dispose();
+      await container.close();
+    });
+
+    proc.emitter.emit("SIGTERM", "SIGTERM");
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(idleSweepCount).toBe(3);
+    expect(proc.exit).toHaveBeenCalledWith(0);
+
+    // Interval must be cleared once server.close completes
+    await vi.advanceTimersByTimeAsync(200);
+    expect(idleSweepCount).toBe(3);
+  });
 });
