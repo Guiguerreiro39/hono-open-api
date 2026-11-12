@@ -1,4 +1,5 @@
 import type { PlatformDeps } from "@/core/types";
+import type { TaskRepository } from "@/modules/tasks/tasks.repository";
 import { $ } from "@hono/zod-openapi";
 import { Scalar } from "@scalar/hono-api-reference";
 import { bodyLimit } from "hono/body-limit";
@@ -11,9 +12,12 @@ import { timeout } from "hono/timeout";
 import { createErrorHandler, getRequestId, notFoundHandler, PayloadTooLargeError } from "@/core/errors";
 import { createRouter } from "@/core/http";
 import { createHttpLogger } from "@/core/logger";
+import { metricsMiddleware } from "@/core/observability/metrics";
+import { traceContext } from "@/core/observability/trace";
 import { createOpenAPIDocumentConfig, registerOpenAPISecuritySchemes } from "@/core/openapi";
 import { createAuthModule } from "@/modules/auth/auth.index";
 import { createSystemModule } from "@/modules/system/system.index";
+import { createTasksModule } from "@/modules/tasks/tasks.index";
 
 const DEFAULT_BODY_LIMIT_BYTES = 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -46,11 +50,13 @@ const referenceSecureHeaders = secureHeaders({
   },
 });
 
-export function createApp(deps: PlatformDeps) {
+export function createApp(deps: PlatformDeps & { taskRepository: TaskRepository }) {
   const base = $(
     createRouter()
       .use("*", requestId())
+      .use("*", traceContext())
       .use("*", createHttpLogger(deps.logger))
+      .use("*", metricsMiddleware(deps.metrics))
       .use("*", cors({ origin: deps.env.CORS_ORIGINS, credentials: true }))
       .use("*", async (c, next) => {
         if (c.req.path === "/reference") {
@@ -109,7 +115,8 @@ export function createApp(deps: PlatformDeps) {
   );
 
   const apiV1 = createRouter()
-    .route("/", createAuthModule(deps));
+    .route("/", createAuthModule(deps))
+    .route("/", createTasksModule(deps));
 
   return withDocsAndAuth
     .route("/", createSystemModule(deps))

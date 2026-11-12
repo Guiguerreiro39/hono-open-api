@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { createRouter } from "@/core/http";
 import { createHttpLogger, createLogger } from "@/core/logger";
+import { runWithTraceContext } from "@/core/observability/trace";
 import { parseEnv } from "@/env";
 
 function createMemoryLogStream() {
@@ -111,5 +112,32 @@ describe("core logger", () => {
     expect(helloEntry.level).toBe(30); // info
     expect(missingEntry.level).toBe(40); // warn
     expect(readyFailEntry.level).toBe(50); // error
+  });
+
+  it("attaches fresh trace_id and span_id via Pino mixin when a trace context is active and omits them otherwise", () => {
+    const env = parseEnv({ NODE_ENV: "test", LOG_LEVEL: "info" });
+    const sink = createMemoryLogStream();
+    const logger = createLogger(env, sink.stream);
+
+    logger.info("outside trace");
+    runWithTraceContext(
+      {
+        traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+        spanId: "00f067aa0ba902b7",
+        traceFlags: "01",
+      },
+      () => {
+        logger.info("inside trace");
+      },
+    );
+    logger.info("after trace");
+
+    const [outside, inside, after] = sink.entries();
+    expect(outside.trace_id).toBeUndefined();
+    expect(outside.span_id).toBeUndefined();
+    expect(inside.trace_id).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(inside.span_id).toBe("00f067aa0ba902b7");
+    expect(after.trace_id).toBeUndefined();
+    expect(after.span_id).toBeUndefined();
   });
 });

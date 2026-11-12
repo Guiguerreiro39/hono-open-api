@@ -48,6 +48,31 @@ describe("database kernel", () => {
     const sessionColumns = await client.execute("PRAGMA table_info('session')");
     expect(sessionColumns.rows.map(row => row.name)).toContain("impersonated_by");
 
+    const tasksTable = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
+    );
+    expect(tasksTable.rows.map(row => row.name)).toEqual(["tasks"]);
+
+    const tasksColumns = await client.execute("PRAGMA table_info('tasks')");
+    expect(tasksColumns.rows.map(row => row.name)).toEqual([
+      "id",
+      "name",
+      "done",
+      "user_id",
+      "created_at",
+      "updated_at",
+    ]);
+
+    const tasksFks = await client.execute("PRAGMA foreign_key_list('tasks')");
+    expect(tasksFks.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: "user",
+        from: "user_id",
+        to: "id",
+        on_delete: "CASCADE",
+      }),
+    ]));
+
     await close();
     await expect(ping()).rejects.toThrow();
   });

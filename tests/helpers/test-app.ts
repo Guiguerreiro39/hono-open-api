@@ -1,5 +1,4 @@
 import type { AuthUser } from "@/core/ports/auth";
-import type { PlatformDeps } from "@/core/types";
 import type { EnvOverrides } from "@/env";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -50,7 +49,7 @@ function isWithinTempDir(targetDir: string): boolean {
 
 export async function createTestApp(
   envOverrides?: EnvOverrides,
-  depsOverrides?: Partial<PlatformDeps>,
+  depsOverrides?: Partial<Parameters<typeof createApp>[0]>,
 ) {
   let autoTempStorageDir: string | undefined;
   let storageLocalDir = envOverrides?.STORAGE_LOCAL_DIR;
@@ -96,7 +95,7 @@ export async function createTestApp(
     throw err;
   }
 
-  const deps: PlatformDeps = {
+  const deps: Parameters<typeof createApp>[0] = {
     ...container,
     ...depsOverrides,
   };

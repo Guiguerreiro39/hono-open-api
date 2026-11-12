@@ -1,12 +1,32 @@
+import type { Context } from "hono";
 import type { healthRoute, readyRoute, rootRoute } from "./system.routes";
 import type { ProbeCheck } from "./system.schema";
-import type { AppRouteHandler, PlatformDeps } from "@/core/types";
+import type { MetricsPort } from "@/core/ports/metrics";
+import type { AppBindings, AppRouteHandler, PlatformDeps } from "@/core/types";
 import type { Env } from "@/env";
+import { createHash, timingSafeEqual } from "node:crypto";
+
+import { NotFoundError, UnauthorizedError } from "@/core/errors";
 
 export interface SystemModuleDeps {
-  env: Pick<Env, "APP_NAME" | "READINESS_TIMEOUT_MS">;
+  env: Pick<Env, "APP_NAME" | "READINESS_TIMEOUT_MS" | "METRICS_ENABLED" | "METRICS_TOKEN">;
   checkDb: PlatformDeps["checkDb"];
   isShuttingDown: PlatformDeps["isShuttingDown"];
+  metrics: MetricsPort;
+}
+
+function extractBearerToken(header: string | undefined): string | null {
+  if (!header) {
+    return null;
+  }
+  const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
+  return match ? match[1] : null;
+}
+
+function tokensMatch(actual: string, expected: string): boolean {
+  const actualHash = createHash("sha256").update(actual, "utf8").digest();
+  const expectedHash = createHash("sha256").update(expected, "utf8").digest();
+  return timingSafeEqual(actualHash, expectedHash);
 }
 
 class ProbeTimeoutError extends Error {
@@ -123,9 +143,28 @@ export function createSystemHandlers(deps: SystemModuleDeps) {
     }, 200);
   };
 
+  const metrics = async (c: Context<AppBindings>) => {
+    if (!deps.env.METRICS_ENABLED) {
+      throw new NotFoundError("Not found");
+    }
+
+    if (deps.env.METRICS_TOKEN !== undefined) {
+      const token = extractBearerToken(c.req.header("authorization"));
+      if (!token || !tokensMatch(token, deps.env.METRICS_TOKEN)) {
+        throw new UnauthorizedError("Unauthorized");
+      }
+    }
+
+    const { body, contentType } = await deps.metrics.render();
+    return c.text(body, 200, {
+      "Content-Type": contentType,
+    });
+  };
+
   return {
     root,
     health,
     ready,
+    metrics,
   };
 }

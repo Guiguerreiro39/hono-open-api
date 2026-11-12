@@ -59,7 +59,7 @@ function emptyToUndefined(value: unknown): unknown {
   return value;
 }
 
-function parseBooleanInput(value: unknown): unknown {
+function parseBooleanEnv(value: unknown): unknown {
   const normalized = emptyToUndefined(value);
   if (normalized === undefined || typeof normalized === "boolean") {
     return normalized;
@@ -103,6 +103,9 @@ const RawEnvSchema = z.object({
   DATABASE_AUTH_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
   CORS_ORIGINS: z.union([z.string(), z.array(z.string())]).optional(),
   READINESS_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(2000)),
+  METRICS_ENABLED: z.preprocess(parseBooleanEnv, z.boolean().default(true)),
+  METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
+  WORKER_METRICS_PORT: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).max(65535).optional()),
   BETTER_AUTH_SECRET: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
   BETTER_AUTH_URL: z.preprocess(
     emptyToUndefined,
@@ -132,7 +135,7 @@ const RawEnvSchema = z.object({
   ),
   S3_ACCESS_KEY_ID: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
   S3_SECRET_ACCESS_KEY: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
-  S3_FORCE_PATH_STYLE: z.preprocess(parseBooleanInput, z.boolean().default(false)),
+  S3_FORCE_PATH_STYLE: z.preprocess(parseBooleanEnv, z.boolean().default(false)),
 });
 
 export interface Env {
@@ -144,6 +147,9 @@ export interface Env {
   DATABASE_AUTH_TOKEN?: string;
   CORS_ORIGINS: string[];
   READINESS_TIMEOUT_MS: number;
+  METRICS_ENABLED: boolean;
+  METRICS_TOKEN?: string;
+  WORKER_METRICS_PORT?: number;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
   STORAGE_DRIVER: StorageDriver;
@@ -291,6 +297,9 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     DATABASE_AUTH_TOKEN: input.DATABASE_AUTH_TOKEN,
     CORS_ORIGINS: corsOrigins,
     READINESS_TIMEOUT_MS: input.READINESS_TIMEOUT_MS,
+    METRICS_ENABLED: input.METRICS_ENABLED,
+    METRICS_TOKEN: input.METRICS_TOKEN,
+    WORKER_METRICS_PORT: input.WORKER_METRICS_PORT,
     BETTER_AUTH_SECRET: betterAuthSecret,
     BETTER_AUTH_URL: betterAuthUrl,
     STORAGE_DRIVER: storageDriver,
