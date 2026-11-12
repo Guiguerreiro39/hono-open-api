@@ -47,6 +47,7 @@ function createFakeAuthPort(sessionResult: AuthSessionResult | null): AuthPort {
     updateProfile: async () => {
       throw new Error("Not implemented");
     },
+    pruneExpired: async () => ({ sessionsDeleted: 0, verificationsDeleted: 0 }),
     handler: async () => new Response("ok"),
   };
 }

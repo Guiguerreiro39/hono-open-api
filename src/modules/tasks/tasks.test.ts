@@ -1,9 +1,10 @@
 import type { AppType } from "@/app";
+import type { MemoryQueueAdapter } from "@/infra/queue";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { hc } from "hono/client";
-import { afterEach, describe, expect, it } from "vitest";
 
+import { afterEach, describe, expect, it } from "vitest";
 import { AUTH_SECURITY } from "@/core/openapi";
 import { ListTasksQuerySchema } from "@/modules/tasks/tasks.routes";
 import { createTestApp } from "../../../tests/helpers/test-app";
@@ -379,5 +380,61 @@ describe("tasks feature module (/api/v1/tasks)", () => {
     expect((await scopedCtx.client.api.v1.tasks[":id"].$get({ param: { id: task.id } }, { headers: caller.headers })).status).toBe(200);
     expect((await scopedCtx.client.api.v1.tasks[":id"].$patch({ param: { id: task.id }, json: { done: true } }, { headers: caller.headers })).status).toBe(404);
     expect((await scopedCtx.client.api.v1.tasks[":id"].$delete({ param: { id: task.id } }, { headers: caller.headers })).status).toBe(404);
+  });
+
+  it("enqueues tasks.audit jobs on create, update, and delete mutations and records completion on drain()", async () => {
+    const ctx = await createTestApp();
+    cleanups.push(ctx.cleanup);
+
+    const queue = ctx.container.queue as MemoryQueueAdapter;
+    const user = await ctx.seedUser({ email: "audit-user@example.com" });
+
+    const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const createRes = await ctx.app.request("/api/v1/tasks", {
+      method: "POST",
+      headers: {
+        ...user.headers,
+        "content-type": "application/json",
+        "traceparent": `00-${traceId}-00f067aa0ba902b7-01`,
+      },
+      body: JSON.stringify({ name: "Audited task" }),
+    });
+    expect(createRes.status).toBe(201);
+    const created = await createRes.json() as { id: string };
+
+    const patchRes = await ctx.client.api.v1.tasks[":id"].$patch({
+      param: { id: created.id },
+      json: { done: true },
+    }, { headers: user.headers });
+    expect(patchRes.status).toBe(200);
+
+    // 404 mutations must not enqueue audit jobs
+    const missingDelete = await ctx.client.api.v1.tasks[":id"].$delete({
+      param: { id: crypto.randomUUID() },
+    }, { headers: user.headers });
+    expect(missingDelete.status).toBe(404);
+
+    const deleteRes = await ctx.client.api.v1.tasks[":id"].$delete({
+      param: { id: created.id },
+    }, { headers: user.headers });
+    expect(deleteRes.status).toBe(204);
+
+    const buffered = queue.getJobs();
+    expect(buffered).toHaveLength(3);
+    expect(buffered.map(j => (j.data as { action: string }).action)).toEqual([
+      "created",
+      "updated",
+      "deleted",
+    ]);
+    expect(buffered[0].traceparent).toContain(`00-${traceId}-`);
+    expect(buffered.every(j => j.status === "waiting")).toBe(true);
+
+    await queue.drain();
+
+    expect(queue.getJobs().every(j => j.status === "completed")).toBe(true);
+
+    const metricsRes = await ctx.app.request("/metrics");
+    const metricsBody = await metricsRes.text();
+    expect(metricsBody).toContain("jobs_processed_total{name=\"tasks.audit\",status=\"completed\"} 3");
   });
 });

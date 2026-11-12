@@ -34,6 +34,11 @@ export interface AuthProfileUpdate {
   image?: string | null;
 }
 
+export interface PruneExpiredAuthResult {
+  sessionsDeleted: number;
+  verificationsDeleted: number;
+}
+
 export interface AuthPort {
   getSession: (headers: Headers) => Promise<AuthSessionResult | null>;
   hasPermission: (params: {
@@ -42,5 +47,6 @@ export interface AuthPort {
     permissions: RbacPermissionMap;
   }) => Promise<boolean>;
   updateProfile: (headers: Headers, input: AuthProfileUpdate) => Promise<AuthUser>;
+  pruneExpired: (now?: Date) => Promise<PruneExpiredAuthResult>;
   handler: (req: Request) => Promise<Response>;
 }

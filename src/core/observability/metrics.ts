@@ -1,7 +1,11 @@
 import type { Context, MiddlewareHandler } from "hono";
 
 import type { MetricsPort } from "@/core/ports/metrics";
+import type { Env } from "@/env";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { matchedRoutes, routePath } from "hono/route";
+
+import { NotFoundError, UnauthorizedError } from "@/core/errors";
 
 const EXCLUDED_PATHS = new Set(["/metrics", "/health", "/ready", "/favicon.ico"]);
 
@@ -52,5 +56,42 @@ export function metricsMiddleware(metrics: MetricsPort): MiddlewareHandler {
         });
       }
     }
+  };
+}
+
+function extractBearerToken(header: string | undefined): string | null {
+  if (!header) {
+    return null;
+  }
+  const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
+  return match ? match[1] : null;
+}
+
+function tokensMatch(actual: string, expected: string): boolean {
+  const actualHash = createHash("sha256").update(actual, "utf8").digest();
+  const expectedHash = createHash("sha256").update(expected, "utf8").digest();
+  return timingSafeEqual(actualHash, expectedHash);
+}
+
+export function createMetricsEndpointHandler(deps: {
+  env: Pick<Env, "METRICS_ENABLED" | "METRICS_TOKEN">;
+  metrics: MetricsPort;
+}) {
+  return async (c: Context) => {
+    if (!deps.env.METRICS_ENABLED) {
+      throw new NotFoundError("Not found");
+    }
+
+    if (deps.env.METRICS_TOKEN !== undefined) {
+      const token = extractBearerToken(c.req.header("authorization"));
+      if (!token || !tokensMatch(token, deps.env.METRICS_TOKEN)) {
+        throw new UnauthorizedError("Unauthorized");
+      }
+    }
+
+    const { body, contentType } = await deps.metrics.render();
+    return c.text(body, 200, {
+      "Content-Type": contentType,
+    });
   };
 }

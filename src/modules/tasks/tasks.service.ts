@@ -5,9 +5,11 @@ import type { AuthUser } from "@/core/ports/auth";
 import type { PlatformDeps } from "@/core/types";
 
 import { ForbiddenError, NotFoundError } from "@/core/errors";
+import { tasksAuditJob } from "./tasks.jobs";
 
 export interface TasksServiceDeps {
   auth: PlatformDeps["auth"];
+  queue: PlatformDeps["queue"];
   taskRepository: TaskRepository;
 }
 
@@ -58,12 +60,21 @@ export function createTasksService(deps: TasksServiceDeps): TasksService {
       });
     },
 
-    createTask(user, input) {
-      return deps.taskRepository.create({
+    async createTask(user, input) {
+      const created = await deps.taskRepository.create({
         name: input.name,
         done: input.done,
         userId: user.id,
       });
+      await deps.queue.enqueue(tasksAuditJob, {
+        action: "created",
+        taskId: created.id,
+        userId: created.userId,
+        actorId: user.id,
+        taskName: created.name,
+        done: created.done,
+      });
+      return created;
     },
 
     async getTaskById(user, id) {
@@ -81,6 +92,14 @@ export function createTasksService(deps: TasksServiceDeps): TasksService {
       if (!updated) {
         throw new NotFoundError("Task not found");
       }
+      await deps.queue.enqueue(tasksAuditJob, {
+        action: "updated",
+        taskId: updated.id,
+        userId: updated.userId,
+        actorId: user.id,
+        taskName: updated.name,
+        done: updated.done,
+      });
       return updated;
     },
 
@@ -90,6 +109,12 @@ export function createTasksService(deps: TasksServiceDeps): TasksService {
       if (!deleted) {
         throw new NotFoundError("Task not found");
       }
+      await deps.queue.enqueue(tasksAuditJob, {
+        action: "deleted",
+        taskId: id,
+        userId: user.id,
+        actorId: user.id,
+      });
     },
   };
 }

@@ -10,6 +10,7 @@ import { createAuthAdapter } from "@/infra/auth";
 import { createDb } from "@/infra/db/client";
 import { createDrizzleTaskRepository } from "@/infra/db/repositories/drizzle-task.repository";
 import { createMetricsAdapter } from "@/infra/observability";
+import { BullMQQueueAdapter, MemoryQueueAdapter } from "@/infra/queue";
 import {
   createRedisClient,
   MemoryCacheAdapter,
@@ -27,7 +28,11 @@ export interface Container extends PlatformDeps {
   close: () => Promise<void>;
 }
 
-export function createContainer(env: Env): Container {
+export interface CreateContainerOptions {
+  worker?: boolean;
+}
+
+export function createContainer(env: Env, options?: CreateContainerOptions): Container {
   const logger = createLogger(env);
   const metrics = createMetricsAdapter(env);
   const { db, client, ping, close: closeDb } = createDb(env);
@@ -35,6 +40,7 @@ export function createContainer(env: Env): Container {
   const { port: storage, close: closeStorage } = createStorageAdapter(env);
   const taskRepository = createDrizzleTaskRepository(db);
   const shutdownController = new AbortController();
+  const workerEnabled = options?.worker ?? env.WORKER_EMBEDDED;
 
   const redisHandle = env.REDIS_URL
     ? createRedisClient({
@@ -66,6 +72,22 @@ export function createContainer(env: Env): Container {
       })
     : new MemoryRateLimiterAdapter({ metrics });
 
+  const queue = env.REDIS_URL
+    ? new BullMQQueueAdapter({
+        redisUrl: env.REDIS_URL,
+        prefix: env.CACHE_PREFIX,
+        logger,
+        metrics,
+        worker: workerEnabled,
+        concurrency: env.WORKER_CONCURRENCY,
+        shutdownTimeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,
+      })
+    : new MemoryQueueAdapter({
+        mode: env.NODE_ENV === "development" ? "auto" : "buffered",
+        logger,
+        metrics,
+      });
+
   return {
     env,
     logger,
@@ -73,6 +95,7 @@ export function createContainer(env: Env): Container {
     auth,
     cache,
     rateLimiter,
+    queue,
     storage,
     betterAuth,
     db,
@@ -86,6 +109,7 @@ export function createContainer(env: Env): Container {
       if (!shutdownController.signal.aborted) {
         shutdownController.abort();
       }
+      await queue.close();
       await rateLimiter.close();
       if (redisHandle) {
         await redisHandle.quit();
