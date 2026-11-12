@@ -1,3 +1,4 @@
+import type { FileRepository } from "@/modules/files/files.repository";
 import type { TaskRepository } from "@/modules/tasks/tasks.repository";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -53,6 +54,18 @@ const stubTaskRepository: TaskRepository = {
   },
   update: async () => null,
   delete: async () => false,
+};
+
+const stubFileRepository: FileRepository = {
+  list: async () => ({ data: [], meta: { nextCursor: null, hasMore: false } }),
+  findById: async () => null,
+  create: async () => {
+    throw new Error("Not implemented");
+  },
+  update: async () => null,
+  delete: async () => false,
+  findExpiredPending: async () => [],
+  deleteExpiredPending: async () => [],
 };
 
 describe("createApp global middleware stack", () => {
@@ -150,6 +163,7 @@ describe("createApp global middleware stack", () => {
       queue: new MemoryQueueAdapter({ logger: createLogger(env) }),
       pubsub: new MemoryPubSubAdapter(),
       taskRepository: stubTaskRepository,
+      fileRepository: stubFileRepository,
       checkDb: () => new Promise(() => {}),
       storage: createMemoryStorageAdapter({ signingSecret: env.STORAGE_SIGNING_SECRET }),
       isShuttingDown: () => false,
@@ -296,6 +310,7 @@ describe("createApp global middleware stack", () => {
       queue: new MemoryQueueAdapter({ logger: createLogger(env) }),
       pubsub: new MemoryPubSubAdapter(),
       taskRepository: stubTaskRepository,
+      fileRepository: stubFileRepository,
       checkDb: async () => {},
       storage: {
         put: (k, b, o) => memStorage.put(k, b, o),
@@ -360,6 +375,7 @@ describe("createApp global middleware stack", () => {
       queue: new MemoryQueueAdapter({ logger: createLogger(env) }),
       pubsub: new MemoryPubSubAdapter(),
       taskRepository: stubTaskRepository,
+      fileRepository: stubFileRepository,
       checkDb: async () => {},
       storage: createMemoryStorageAdapter({ signingSecret: env.STORAGE_SIGNING_SECRET }),
       isShuttingDown: () => false,
@@ -498,6 +514,7 @@ describe("createApp global middleware stack", () => {
       queue: new MemoryQueueAdapter({ logger: createLogger(env) }),
       pubsub: slowPubSub,
       taskRepository: stubTaskRepository,
+      fileRepository: stubFileRepository,
       checkDb: async () => {},
       storage: createMemoryStorageAdapter({ signingSecret: env.STORAGE_SIGNING_SECRET }),
       isShuttingDown: () => false,
@@ -667,5 +684,135 @@ describe("createApp global middleware stack", () => {
       headers: user.headers,
     });
     expect(blockedUpload.status).toBe(429);
+  });
+
+  it("exempts POST /api/v1/files and GET /api/v1/files/{id}/download from the 30s HTTP timeout()", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+
+    const env = parseEnv({ NODE_ENV: "test" });
+    const ac = new AbortController();
+    cleanups.push(async () => {
+      ac.abort();
+    });
+
+    const fileId = crypto.randomUUID();
+    const userId = "u-files-timeout";
+    const slowStorage = createMemoryStorageAdapter({ signingSecret: env.STORAGE_SIGNING_SECRET });
+    const originalPut = slowStorage.put.bind(slowStorage);
+    const originalGet = slowStorage.get.bind(slowStorage);
+    let resolvePutEntered: (() => void) | undefined;
+    const putEntered = new Promise<void>((resolve) => {
+      resolvePutEntered = resolve;
+    });
+    let resolveGetEntered: (() => void) | undefined;
+    const getEntered = new Promise<void>((resolve) => {
+      resolveGetEntered = resolve;
+    });
+    const slowRecord = {
+      id: fileId,
+      userId,
+      key: `files/${userId}/${fileId}`,
+      originalName: "slow.txt",
+      mimeType: "text/plain",
+      sizeBytes: 4,
+      checksumSha256: null,
+      status: "ready" as const,
+      expiresAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const app = createApp({
+      env,
+      logger: createLogger(env),
+      metrics: new NoopMetricsAdapter(),
+      auth: {
+        getSession: async () => ({
+          user: {
+            id: userId,
+            name: "Slow File User",
+            email: "slow@example.com",
+            emailVerified: true,
+            image: null,
+            role: "user",
+            banned: false,
+            banReason: null,
+            banExpires: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          session: {
+            id: "s-files-timeout",
+            userId,
+            token: "tok-files-timeout",
+            expiresAt: new Date(Date.now() + 60_000),
+            ipAddress: null,
+            userAgent: null,
+            impersonatedBy: null,
+          },
+        }),
+        hasPermission: async () => true,
+        updateProfile: async () => {
+          throw new Error("Not implemented");
+        },
+        pruneExpired: async () => ({ sessionsDeleted: 0, verificationsDeleted: 0 }),
+        handler: async () => new Response("Not implemented", { status: 501 }),
+      },
+      cache: new MemoryCacheAdapter(),
+      rateLimiter: new MemoryRateLimiterAdapter(),
+      queue: new MemoryQueueAdapter({ logger: createLogger(env) }),
+      pubsub: new MemoryPubSubAdapter(),
+      taskRepository: stubTaskRepository,
+      fileRepository: {
+        ...stubFileRepository,
+        findById: async id => (id === fileId ? slowRecord : null),
+        create: async input => ({
+          ...slowRecord,
+          ...input,
+          id: input.id ?? crypto.randomUUID(),
+          checksumSha256: input.checksumSha256 ?? null,
+          expiresAt: input.expiresAt ?? null,
+        }),
+      },
+      checkDb: async () => {},
+      storage: {
+        put: async (k, b, o) => {
+          resolvePutEntered?.();
+          await new Promise(resolve => setTimeout(resolve, 35_000));
+          return originalPut(k, b, o);
+        },
+        get: async (k, o) => {
+          resolveGetEntered?.();
+          await new Promise(resolve => setTimeout(resolve, 35_000));
+          return originalGet(k, o);
+        },
+        head: k => slowStorage.head(k),
+        delete: k => slowStorage.delete(k),
+        getSignedPutUrl: (k, o) => slowStorage.getSignedPutUrl(k, o),
+        getSignedGetUrl: (k, o) => slowStorage.getSignedGetUrl(k, o),
+      },
+      isShuttingDown: () => false,
+      shutdownSignal: ac.signal,
+    });
+
+    await originalPut(slowRecord.key, new TextEncoder().encode("slow"), { contentType: "text/plain" });
+
+    const form = new FormData();
+    form.set("file", new File(["slow"], "slow.txt", { type: "text/plain" }));
+    const uploadPromise = app.request("/api/v1/files", {
+      method: "POST",
+      body: form,
+    });
+    await putEntered;
+    await vi.advanceTimersByTimeAsync(35_000);
+    const uploadRes = await uploadPromise;
+    expect(uploadRes.status).toBe(201);
+
+    const downloadPromise = app.request(`/api/v1/files/${fileId}/download`);
+    await getEntered;
+    await vi.advanceTimersByTimeAsync(35_000);
+    const downloadRes = await downloadPromise;
+    expect(downloadRes.status).toBe(200);
+    expect(await downloadRes.text()).toBe("slow");
   });
 });

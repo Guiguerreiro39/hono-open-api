@@ -1,4 +1,5 @@
 import type { PlatformDeps } from "@/core/types";
+import type { FileRepository } from "@/modules/files/files.repository";
 import type { TaskRepository } from "@/modules/tasks/tasks.repository";
 import { $ } from "@hono/zod-openapi";
 import { Scalar } from "@scalar/hono-api-reference";
@@ -18,20 +19,42 @@ import { createOpenAPIDocumentConfig, registerOpenAPISecuritySchemes } from "@/c
 import { createApiRateLimiter, createAuthRateLimiter } from "@/core/rate-limit";
 import { createSseConnectionTracker } from "@/core/realtime/sse";
 import { createAuthModule } from "@/modules/auth/auth.index";
+import { createFilesModule } from "@/modules/files/files.index";
 import { createSystemModule } from "@/modules/system/system.index";
 import { createTasksModule } from "@/modules/tasks/tasks.index";
 
 const DEFAULT_BODY_LIMIT_BYTES = 1024 * 1024;
+const UPLOAD_BODY_LIMIT_OVERHEAD_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const FILE_DOWNLOAD_PATH_PATTERN = /^\/api\/v1\/files\/[^/]+\/download\/?$/;
 
 function isSignedStoragePath(path: string): boolean {
   return path === "/_storage" || path.startsWith("/_storage/");
 }
 
-function isTimeoutExemptPath(path: string): boolean {
+function isMultipartUploadRequest(method: string, path: string): boolean {
+  return method.toUpperCase() === "POST"
+    && (path === "/api/v1/files" || path === "/api/v1/files/");
+}
+
+function isUploadRateLimitedRequest(method: string, path: string): boolean {
+  if (method.toUpperCase() !== "POST") {
+    return false;
+  }
+  return (
+    path === "/api/v1/files"
+    || path === "/api/v1/files/"
+    || path === "/api/v1/files/presign"
+    || path === "/api/v1/files/presign/"
+  );
+}
+
+function isTimeoutExemptRequest(method: string, path: string): boolean {
   return isSignedStoragePath(path)
     || path === "/api/v1/tasks/live"
-    || path === "/api/v1/tasks/live/";
+    || path === "/api/v1/tasks/live/"
+    || isMultipartUploadRequest(method, path)
+    || (method.toUpperCase() === "GET" && FILE_DOWNLOAD_PATH_PATTERN.test(path));
 }
 
 const defaultBodyLimit = bodyLimit({
@@ -58,7 +81,17 @@ const referenceSecureHeaders = secureHeaders({
   },
 });
 
-export function createApp(deps: PlatformDeps & { taskRepository: TaskRepository }) {
+export function createApp(deps: PlatformDeps & {
+  taskRepository: TaskRepository;
+  fileRepository: FileRepository;
+}) {
+  const uploadBodyLimit = bodyLimit({
+    maxSize: deps.env.STORAGE_MAX_FILE_SIZE_BYTES + UPLOAD_BODY_LIMIT_OVERHEAD_BYTES,
+    onError: () => {
+      throw new PayloadTooLargeError("File upload exceeds maximum allowed body size");
+    },
+  });
+
   const base = $(
     createRouter()
       .use("*", requestId())
@@ -76,10 +109,13 @@ export function createApp(deps: PlatformDeps & { taskRepository: TaskRepository 
         if (isSignedStoragePath(c.req.path)) {
           return next();
         }
+        if (isMultipartUploadRequest(c.req.method, c.req.path)) {
+          return uploadBodyLimit(c, next);
+        }
         return defaultBodyLimit(c, next);
       })
       .use("*", async (c, next) => {
-        if (isTimeoutExemptPath(c.req.path)) {
+        if (isTimeoutExemptRequest(c.req.method, c.req.path)) {
           return next();
         }
         return defaultTimeout(c, next);
@@ -127,10 +163,13 @@ export function createApp(deps: PlatformDeps & { taskRepository: TaskRepository 
 
   const apiV1 = $(
     createRouter()
-      .use("*", createApiRateLimiter(deps)),
+      .use("*", createApiRateLimiter(deps, {
+        skip: c => isUploadRateLimitedRequest(c.req.method, c.req.path),
+      })),
   )
     .route("/", createAuthModule(deps))
-    .route("/", createTasksModule({ ...deps, sseConnections }));
+    .route("/", createTasksModule({ ...deps, sseConnections }))
+    .route("/", createFilesModule(deps));
 
   return withDocsAndAuth
     .route("/", createSystemModule(deps))
