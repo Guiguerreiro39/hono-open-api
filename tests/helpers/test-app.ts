@@ -1,5 +1,4 @@
 import type { AuthUser } from "@/core/ports/auth";
-import type { PlatformDeps } from "@/core/types";
 import type { EnvOverrides } from "@/env";
 import { eq } from "drizzle-orm";
 import { testClient } from "hono/testing";
@@ -40,7 +39,7 @@ function extractCookieHeader(headers: Headers): string {
 
 export async function createTestApp(
   envOverrides?: EnvOverrides,
-  depsOverrides?: Partial<PlatformDeps>,
+  depsOverrides?: Partial<Parameters<typeof createApp>[0]>,
 ) {
   const env = parseEnv({
     NODE_ENV: "test",
@@ -52,7 +51,7 @@ export async function createTestApp(
   const container = createContainer(env);
   await migrateDatabase(container.db);
 
-  const deps: PlatformDeps = {
+  const deps: Parameters<typeof createApp>[0] = {
     ...container,
     ...depsOverrides,
   };

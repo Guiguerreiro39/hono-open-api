@@ -1,3 +1,4 @@
+import type { TaskRepository } from "@/modules/tasks/tasks.repository";
 import { Writable } from "node:stream";
 import { createRoute, z } from "@hono/zod-openapi";
 import { hc } from "hono/client";
@@ -9,6 +10,16 @@ import { AUTH_SECURITY } from "@/core/openapi";
 import { parseEnv } from "@/env";
 import { NoopMetricsAdapter, PromMetricsAdapter } from "@/infra/observability";
 import { createTestApp } from "../tests/helpers/test-app";
+
+const stubTaskRepository: TaskRepository = {
+  list: async () => ({ data: [], meta: { nextCursor: null, hasMore: false } }),
+  findById: async () => null,
+  create: async () => {
+    throw new Error("Not implemented");
+  },
+  update: async () => null,
+  delete: async () => false,
+};
 
 describe("createApp global middleware stack", () => {
   const cleanups: Array<() => Promise<void>> = [];
@@ -99,6 +110,7 @@ describe("createApp global middleware stack", () => {
         },
         handler: async () => new Response("Not implemented", { status: 501 }),
       },
+      taskRepository: stubTaskRepository,
       checkDb: () => new Promise(() => {}),
       isShuttingDown: () => false,
       shutdownSignal: ac.signal,
@@ -187,6 +199,7 @@ describe("createApp global middleware stack", () => {
           headers: { "Content-Type": "text/event-stream" },
         }),
       },
+      taskRepository: stubTaskRepository,
       checkDb: async () => {},
       isShuttingDown: () => false,
       shutdownSignal: ac.signal,
