@@ -16,12 +16,17 @@ import { createUploadRateLimiter } from "@/core/rate-limit";
 import { parseEnv } from "@/env";
 import { NoopMetricsAdapter, PromMetricsAdapter } from "@/infra/observability";
 import {
+  MemoryPubSubAdapter,
+  RedisPubSubAdapter,
+} from "@/infra/realtime";
+import {
   MemoryCacheAdapter,
   MemoryRateLimiterAdapter,
   RedisCacheAdapter,
   RedisRateLimiterAdapter,
 } from "@/infra/redis";
 import { createMemoryStorageAdapter } from "@/infra/storage/memory";
+import { createSseReader } from "../tests/helpers/sse";
 import { createTestApp } from "../tests/helpers/test-app";
 
 function collectTsFiles(dir: string): string[] {
@@ -140,6 +145,7 @@ describe("createApp global middleware stack", () => {
       },
       cache: new MemoryCacheAdapter(),
       rateLimiter: new MemoryRateLimiterAdapter(),
+      pubsub: new MemoryPubSubAdapter(),
       taskRepository: stubTaskRepository,
       checkDb: () => new Promise(() => {}),
       storage: createMemoryStorageAdapter({ signingSecret: env.STORAGE_SIGNING_SECRET }),
@@ -283,6 +289,7 @@ describe("createApp global middleware stack", () => {
       },
       cache: new MemoryCacheAdapter(),
       rateLimiter: new MemoryRateLimiterAdapter(),
+      pubsub: new MemoryPubSubAdapter(),
       taskRepository: stubTaskRepository,
       checkDb: async () => {},
       storage: {
@@ -344,6 +351,7 @@ describe("createApp global middleware stack", () => {
       },
       cache: new MemoryCacheAdapter(),
       rateLimiter: new MemoryRateLimiterAdapter(),
+      pubsub: new MemoryPubSubAdapter(),
       taskRepository: stubTaskRepository,
       checkDb: async () => {},
       storage: createMemoryStorageAdapter({ signingSecret: env.STORAGE_SIGNING_SECRET }),
@@ -412,13 +420,89 @@ describe("createApp global middleware stack", () => {
     cleanups.push(memCtx.cleanup);
     expect(memCtx.container.cache).toBeInstanceOf(MemoryCacheAdapter);
     expect(memCtx.container.rateLimiter).toBeInstanceOf(MemoryRateLimiterAdapter);
+    expect(memCtx.container.pubsub).toBeInstanceOf(MemoryPubSubAdapter);
     expect(memCtx.container.checkRedis).toBeUndefined();
 
     const redisCtx = await createTestApp({ REDIS_URL: "redis://127.0.0.1:6399" });
     cleanups.push(redisCtx.cleanup);
     expect(redisCtx.container.cache).toBeInstanceOf(RedisCacheAdapter);
     expect(redisCtx.container.rateLimiter).toBeInstanceOf(RedisRateLimiterAdapter);
+    expect(redisCtx.container.pubsub).toBeInstanceOf(RedisPubSubAdapter);
     expect(typeof redisCtx.container.checkRedis).toBe("function");
+  });
+
+  it("exempts /api/v1/tasks/live from the 30s HTTP timeout()", async () => {
+    vi.useFakeTimers();
+
+    const env = parseEnv({ NODE_ENV: "test" });
+    const ac = new AbortController();
+    cleanups.push(async () => {
+      ac.abort();
+    });
+
+    const memPubSub = new MemoryPubSubAdapter();
+    const slowPubSub: typeof memPubSub = Object.assign(Object.create(memPubSub), {
+      subscribe: async <T>(topic: string, listener: Parameters<typeof memPubSub.subscribe<T>>[1]) => {
+        await new Promise(resolve => setTimeout(resolve, 35_000));
+        return memPubSub.subscribe(topic, listener);
+      },
+    });
+
+    const app = createApp({
+      env,
+      logger: createLogger(env),
+      metrics: new NoopMetricsAdapter(),
+      auth: {
+        getSession: async () => ({
+          user: {
+            id: "u-live",
+            name: "Live User",
+            email: "live@example.com",
+            emailVerified: true,
+            image: null,
+            role: "user",
+            banned: false,
+            banReason: null,
+            banExpires: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          session: {
+            id: "s-live",
+            userId: "u-live",
+            token: "tok-live",
+            expiresAt: new Date(Date.now() + 60_000),
+            ipAddress: null,
+            userAgent: null,
+            impersonatedBy: null,
+          },
+        }),
+        hasPermission: async () => false,
+        updateProfile: async () => {
+          throw new Error("Not implemented");
+        },
+        handler: async () => new Response("Not implemented", { status: 501 }),
+      },
+      cache: new MemoryCacheAdapter(),
+      rateLimiter: new MemoryRateLimiterAdapter(),
+      pubsub: slowPubSub,
+      taskRepository: stubTaskRepository,
+      checkDb: async () => {},
+      storage: createMemoryStorageAdapter({ signingSecret: env.STORAGE_SIGNING_SECRET }),
+      isShuttingDown: () => false,
+      shutdownSignal: ac.signal,
+    });
+
+    const resPromise = app.request("/api/v1/tasks/live");
+    await vi.advanceTimersByTimeAsync(35_000);
+    const res = await resPromise;
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+
+    const sse = createSseReader(res, 5_000);
+    cleanups.push(() => sse.close());
+    const initEvt = await sse.next();
+    expect(initEvt?.event).toBe("init");
   });
 
   it("enforces tiered rate limits, TRUST_PROXY IP resolution, user keying, and exemptions when RATE_LIMIT_ENABLED=true", async () => {

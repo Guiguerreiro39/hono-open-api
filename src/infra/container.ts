@@ -10,6 +10,7 @@ import { createAuthAdapter } from "@/infra/auth";
 import { createDb } from "@/infra/db/client";
 import { createDrizzleTaskRepository } from "@/infra/db/repositories/drizzle-task.repository";
 import { createMetricsAdapter } from "@/infra/observability";
+import { MemoryPubSubAdapter, RedisPubSubAdapter } from "@/infra/realtime";
 import {
   createRedisClient,
   MemoryCacheAdapter,
@@ -66,6 +67,15 @@ export function createContainer(env: Env): Container {
       })
     : new MemoryRateLimiterAdapter({ metrics });
 
+  const pubsub = redisHandle
+    ? new RedisPubSubAdapter({
+        pub: redisHandle.client,
+        ping: redisHandle.ping,
+        prefix: env.CACHE_PREFIX,
+        logger,
+      })
+    : new MemoryPubSubAdapter({ logger });
+
   return {
     env,
     logger,
@@ -73,6 +83,7 @@ export function createContainer(env: Env): Container {
     auth,
     cache,
     rateLimiter,
+    pubsub,
     storage,
     betterAuth,
     db,
@@ -86,6 +97,7 @@ export function createContainer(env: Env): Container {
       if (!shutdownController.signal.aborted) {
         shutdownController.abort();
       }
+      await pubsub.close();
       await rateLimiter.close();
       if (redisHandle) {
         await redisHandle.quit();

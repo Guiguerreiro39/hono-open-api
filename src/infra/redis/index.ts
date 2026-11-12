@@ -1,4 +1,5 @@
 export {
+  awaitRedisHandshake,
   createRedisClient,
   type CreateRedisClientOptions,
   defaultRedisRetryStrategy,
@@ -6,6 +7,7 @@ export {
   pingRedisClient,
   quitRedisClient,
   type RedisClientHandle,
+  type RedisLifecycleClient,
 } from "./client";
 export {
   DEFAULT_MEMORY_CACHE_MAX_ENTRIES,
