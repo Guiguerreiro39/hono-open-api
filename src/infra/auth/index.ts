@@ -8,6 +8,7 @@ import { bearer, openAPI } from "better-auth/plugins";
 import { createAccessControl } from "better-auth/plugins/access";
 import { admin } from "better-auth/plugins/admin";
 import { adminAc, defaultStatements, userAc } from "better-auth/plugins/admin/access";
+import { lt } from "drizzle-orm";
 
 import { RBAC_STATEMENTS, ROLE_STATEMENTS } from "@/core/auth/permissions";
 import { UnauthorizedError } from "@/core/errors";
@@ -173,6 +174,21 @@ export function createAuthAdapter(
         throw new UnauthorizedError("Session not found");
       }
       return mapUser(sessionRes.user);
+    },
+
+    async pruneExpired(now = new Date()) {
+      const deletedSessions = await db
+        .delete(schema.session)
+        .where(lt(schema.session.expiresAt, now))
+        .returning({ id: schema.session.id });
+      const deletedVerifications = await db
+        .delete(schema.verification)
+        .where(lt(schema.verification.expiresAt, now))
+        .returning({ id: schema.verification.id });
+      return {
+        sessionsDeleted: deletedSessions.length,
+        verificationsDeleted: deletedVerifications.length,
+      };
     },
 
     handler(req) {

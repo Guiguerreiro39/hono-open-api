@@ -4,3 +4,4 @@ trustPolicy: no-downgrade
 
 allowBuilds:
   esbuild: true
+  msgpackr-extract: false

@@ -25,6 +25,9 @@ describe("parseEnv", () => {
     expect(env.METRICS_ENABLED).toBe(true);
     expect(env.METRICS_TOKEN).toBeUndefined();
     expect(env.WORKER_METRICS_PORT).toBeUndefined();
+    expect(env.WORKER_EMBEDDED).toBe(false);
+    expect(env.WORKER_CONCURRENCY).toBe(5);
+    expect(env.WORKER_SHUTDOWN_TIMEOUT_MS).toBe(10_000);
     expect(env.REDIS_URL).toBeUndefined();
     expect(env.CACHE_PREFIX).toBe("app");
     expect(env.TRUST_PROXY).toBe(false);
@@ -362,6 +365,34 @@ describe("parseEnv", () => {
     expect(parseEnv({ NODE_ENV: "test", RATE_LIMIT_ENABLED: "" }).RATE_LIMIT_ENABLED).toBe(false);
     expect(() => parseEnv({ NODE_ENV: "test", TRUST_PROXY: "yes" })).toThrow(EnvValidationError);
     expect(() => parseEnv({ NODE_ENV: "test", RATE_LIMIT_ENABLED: "maybe" })).toThrow(EnvValidationError);
+  });
+
+  it("parses WORKER_EMBEDDED, WORKER_CONCURRENCY, and WORKER_SHUTDOWN_TIMEOUT_MS with validation", () => {
+    const defaults = parseEnv({ NODE_ENV: "test" });
+    expect(defaults.WORKER_EMBEDDED).toBe(false);
+    expect(defaults.WORKER_CONCURRENCY).toBe(5);
+    expect(defaults.WORKER_SHUTDOWN_TIMEOUT_MS).toBe(10_000);
+
+    const configured = parseEnv({
+      NODE_ENV: "development",
+      WORKER_EMBEDDED: "true",
+      WORKER_CONCURRENCY: "12",
+      WORKER_SHUTDOWN_TIMEOUT_MS: "25000",
+    });
+    expect(configured.WORKER_EMBEDDED).toBe(true);
+    expect(configured.WORKER_CONCURRENCY).toBe(12);
+    expect(configured.WORKER_SHUTDOWN_TIMEOUT_MS).toBe(25_000);
+
+    expect(parseEnv({ NODE_ENV: "test", WORKER_EMBEDDED: "1" }).WORKER_EMBEDDED).toBe(true);
+    expect(parseEnv({ NODE_ENV: "test", WORKER_EMBEDDED: "0" }).WORKER_EMBEDDED).toBe(false);
+    expect(parseEnv({ NODE_ENV: "test", WORKER_EMBEDDED: "" }).WORKER_EMBEDDED).toBe(false);
+
+    expect(() => parseEnv({ NODE_ENV: "test", WORKER_EMBEDDED: "yes" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", WORKER_CONCURRENCY: "0" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", WORKER_CONCURRENCY: "-2" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", WORKER_CONCURRENCY: "1.5" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", WORKER_SHUTDOWN_TIMEOUT_MS: "0" })).toThrow(EnvValidationError);
+    expect(() => parseEnv({ NODE_ENV: "test", WORKER_SHUTDOWN_TIMEOUT_MS: "abc" })).toThrow(EnvValidationError);
   });
 
   it("parses MAX_SSE_CONNECTIONS with default 1000 and allows 0 (unlimited) while rejecting negative or non-integer values", () => {

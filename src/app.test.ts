@@ -15,6 +15,7 @@ import { AUTH_SECURITY } from "@/core/openapi";
 import { createUploadRateLimiter } from "@/core/rate-limit";
 import { parseEnv } from "@/env";
 import { NoopMetricsAdapter, PromMetricsAdapter } from "@/infra/observability";
+import { BullMQQueueAdapter, MemoryQueueAdapter } from "@/infra/queue";
 import {
   MemoryPubSubAdapter,
   RedisPubSubAdapter,
@@ -141,10 +142,12 @@ describe("createApp global middleware stack", () => {
         updateProfile: async () => {
           throw new Error("Not implemented");
         },
+        pruneExpired: async () => ({ sessionsDeleted: 0, verificationsDeleted: 0 }),
         handler: async () => new Response("Not implemented", { status: 501 }),
       },
       cache: new MemoryCacheAdapter(),
       rateLimiter: new MemoryRateLimiterAdapter(),
+      queue: new MemoryQueueAdapter({ logger: createLogger(env) }),
       pubsub: new MemoryPubSubAdapter(),
       taskRepository: stubTaskRepository,
       checkDb: () => new Promise(() => {}),
@@ -285,10 +288,12 @@ describe("createApp global middleware stack", () => {
         updateProfile: async () => {
           throw new Error("Not implemented");
         },
+        pruneExpired: async () => ({ sessionsDeleted: 0, verificationsDeleted: 0 }),
         handler: async () => new Response("Not implemented", { status: 501 }),
       },
       cache: new MemoryCacheAdapter(),
       rateLimiter: new MemoryRateLimiterAdapter(),
+      queue: new MemoryQueueAdapter({ logger: createLogger(env) }),
       pubsub: new MemoryPubSubAdapter(),
       taskRepository: stubTaskRepository,
       checkDb: async () => {},
@@ -344,6 +349,7 @@ describe("createApp global middleware stack", () => {
         updateProfile: async () => {
           throw new Error("Not implemented");
         },
+        pruneExpired: async () => ({ sessionsDeleted: 0, verificationsDeleted: 0 }),
         handler: async () => new Response("event: ping\ndata: {}\n\n", {
           status: 200,
           headers: { "Content-Type": "text/event-stream" },
@@ -351,6 +357,7 @@ describe("createApp global middleware stack", () => {
       },
       cache: new MemoryCacheAdapter(),
       rateLimiter: new MemoryRateLimiterAdapter(),
+      queue: new MemoryQueueAdapter({ logger: createLogger(env) }),
       pubsub: new MemoryPubSubAdapter(),
       taskRepository: stubTaskRepository,
       checkDb: async () => {},
@@ -400,7 +407,7 @@ describe("createApp global middleware stack", () => {
     expect(metricsBody).not.toContain("http_request_duration_seconds_count{method=\"GET\",route=\"/api/auth/*\"");
   });
 
-  it("keeps src/core and src/modules free of ioredis and hono-rate-limiter imports", () => {
+  it("keeps src/core and src/modules free of ioredis, bullmq, and hono-rate-limiter imports", () => {
     const rootDir = process.cwd();
     const checkedFiles = [
       ...collectTsFiles(path.join(rootDir, "src/core")),
@@ -410,16 +417,17 @@ describe("createApp global middleware stack", () => {
     expect(checkedFiles.length).toBeGreaterThan(0);
     for (const filePath of checkedFiles) {
       const source = readFileSync(filePath, "utf8");
-      expect(source).not.toMatch(/\bfrom\s+["'](?:ioredis|hono-rate-limiter)/);
-      expect(source).not.toMatch(/\bimport\s*\(\s*["'](?:ioredis|hono-rate-limiter)/);
+      expect(source).not.toMatch(/\bfrom\s+["'](?:ioredis|bullmq|hono-rate-limiter)/);
+      expect(source).not.toMatch(/\bimport\s*\(\s*["'](?:ioredis|bullmq|hono-rate-limiter)/);
     }
   });
 
-  it("wires Memory adapters when REDIS_URL is unset and Redis adapters when REDIS_URL is set", async () => {
+  it("wires Memory adapters when REDIS_URL is unset and Redis/BullMQ adapters when REDIS_URL is set", async () => {
     const memCtx = await createTestApp();
     cleanups.push(memCtx.cleanup);
     expect(memCtx.container.cache).toBeInstanceOf(MemoryCacheAdapter);
     expect(memCtx.container.rateLimiter).toBeInstanceOf(MemoryRateLimiterAdapter);
+    expect(memCtx.container.queue).toBeInstanceOf(MemoryQueueAdapter);
     expect(memCtx.container.pubsub).toBeInstanceOf(MemoryPubSubAdapter);
     expect(memCtx.container.checkRedis).toBeUndefined();
 
@@ -427,6 +435,7 @@ describe("createApp global middleware stack", () => {
     cleanups.push(redisCtx.cleanup);
     expect(redisCtx.container.cache).toBeInstanceOf(RedisCacheAdapter);
     expect(redisCtx.container.rateLimiter).toBeInstanceOf(RedisRateLimiterAdapter);
+    expect(redisCtx.container.queue).toBeInstanceOf(BullMQQueueAdapter);
     expect(redisCtx.container.pubsub).toBeInstanceOf(RedisPubSubAdapter);
     expect(typeof redisCtx.container.checkRedis).toBe("function");
   });
@@ -481,10 +490,12 @@ describe("createApp global middleware stack", () => {
         updateProfile: async () => {
           throw new Error("Not implemented");
         },
+        pruneExpired: async () => ({ sessionsDeleted: 0, verificationsDeleted: 0 }),
         handler: async () => new Response("Not implemented", { status: 501 }),
       },
       cache: new MemoryCacheAdapter(),
       rateLimiter: new MemoryRateLimiterAdapter(),
+      queue: new MemoryQueueAdapter({ logger: createLogger(env) }),
       pubsub: slowPubSub,
       taskRepository: stubTaskRepository,
       checkDb: async () => {},

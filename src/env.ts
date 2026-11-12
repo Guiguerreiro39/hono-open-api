@@ -117,6 +117,9 @@ const RawEnvSchema = z.object({
   METRICS_ENABLED: z.preprocess(parseBooleanEnv, z.boolean().default(true)),
   METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
   WORKER_METRICS_PORT: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).max(65535).optional()),
+  WORKER_EMBEDDED: z.preprocess(parseBooleanEnv, z.boolean().default(false)),
+  WORKER_CONCURRENCY: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(5)),
+  WORKER_SHUTDOWN_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(10_000)),
   BETTER_AUTH_SECRET: z.preprocess(emptyToUndefined, z.string().trim().min(1).optional()),
   BETTER_AUTH_URL: z.preprocess(
     emptyToUndefined,
@@ -171,6 +174,9 @@ export interface Env {
   METRICS_ENABLED: boolean;
   METRICS_TOKEN?: string;
   WORKER_METRICS_PORT?: number;
+  WORKER_EMBEDDED: boolean;
+  WORKER_CONCURRENCY: number;
+  WORKER_SHUTDOWN_TIMEOUT_MS: number;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
   REDIS_URL?: string;
@@ -337,6 +343,9 @@ export const EnvSchema = RawEnvSchema.transform((input, ctx): Env => {
     METRICS_ENABLED: input.METRICS_ENABLED,
     METRICS_TOKEN: input.METRICS_TOKEN,
     WORKER_METRICS_PORT: input.WORKER_METRICS_PORT,
+    WORKER_EMBEDDED: input.WORKER_EMBEDDED,
+    WORKER_CONCURRENCY: input.WORKER_CONCURRENCY,
+    WORKER_SHUTDOWN_TIMEOUT_MS: input.WORKER_SHUTDOWN_TIMEOUT_MS,
     BETTER_AUTH_SECRET: betterAuthSecret,
     BETTER_AUTH_URL: betterAuthUrl,
     REDIS_URL: input.REDIS_URL,

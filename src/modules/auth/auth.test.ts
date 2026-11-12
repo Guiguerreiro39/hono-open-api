@@ -1,10 +1,13 @@
 import type { AppType } from "@/app";
+import type { MemoryQueueAdapter } from "@/infra/queue";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { hc } from "hono/client";
-import { afterEach, describe, expect, it } from "vitest";
 
+import { afterEach, describe, expect, it } from "vitest";
 import { AUTH_SECURITY } from "@/core/openapi";
+import { session as sessionTable, verification as verificationTable } from "@/infra/db/schema";
+import { authPruneExpiredJob } from "@/modules/auth/auth.jobs";
 import { createTestApp } from "../../../tests/helpers/test-app";
 
 function collectTsFiles(dir: string): string[] {
@@ -330,5 +333,69 @@ describe("auth module, better auth endpoints, and scalar docs", () => {
     // Non-/reference routes retain default secureHeaders without cdn.jsdelivr.net CSP
     const healthRes = await ctx.app.request("/health");
     expect(healthRes.headers.get("content-security-policy")).toBeNull();
+  });
+
+  it("keeps src/modules/auth free of drizzle-orm and infra imports and prunes only expired session and verification rows", async () => {
+    const authDir = path.join(process.cwd(), "src/modules/auth");
+    const files = collectTsFiles(authDir);
+    expect(files.length).toBeGreaterThan(0);
+    for (const filePath of files) {
+      const source = readFileSync(filePath, "utf8");
+      expect(source).not.toMatch(/\bdrizzle-orm\b/);
+      expect(source).not.toMatch(/\bbullmq\b/);
+      expect(source).not.toMatch(/@\/infra\//);
+    }
+
+    const ctx = await createTestApp();
+    cleanups.push(ctx.cleanup);
+
+    const seeded = await ctx.seedUser({ email: "prune-test@example.com" });
+
+    const nowMs = Date.now();
+    const expiredAt = new Date(nowMs - 60_000);
+    const futureAt = new Date(nowMs + 3_600_000);
+
+    await ctx.container.db.insert(sessionTable).values([
+      {
+        id: crypto.randomUUID(),
+        token: `expired-tok-${crypto.randomUUID()}`,
+        userId: seeded.user.id,
+        expiresAt: expiredAt,
+      },
+      {
+        id: crypto.randomUUID(),
+        token: `active-tok-${crypto.randomUUID()}`,
+        userId: seeded.user.id,
+        expiresAt: futureAt,
+      },
+    ]);
+
+    await ctx.container.db.insert(verificationTable).values([
+      {
+        id: crypto.randomUUID(),
+        identifier: "expired@example.com",
+        value: "v-expired",
+        expiresAt: expiredAt,
+      },
+      {
+        id: crypto.randomUUID(),
+        identifier: "active@example.com",
+        value: "v-active",
+        expiresAt: futureAt,
+      },
+    ]);
+
+    await ctx.container.queue.enqueue(authPruneExpiredJob, {});
+    await (ctx.container.queue as MemoryQueueAdapter).drain();
+
+    const remainingSessions = await ctx.container.db.select().from(sessionTable);
+    const remainingVerifications = await ctx.container.db.select().from(verificationTable);
+
+    // Seeded user's active session + explicitly inserted active session remain; expired session is gone
+    expect(remainingSessions.every(s => s.expiresAt.getTime() > nowMs)).toBe(true);
+    expect(remainingSessions).toHaveLength(2);
+
+    expect(remainingVerifications).toHaveLength(1);
+    expect(remainingVerifications[0].identifier).toBe("active@example.com");
   });
 });

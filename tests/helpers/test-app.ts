@@ -11,6 +11,7 @@ import { parseEnv } from "@/env";
 import { createContainer } from "@/infra/container";
 import { migrateDatabase } from "@/infra/db/migrate";
 import { user as userTable } from "@/infra/db/schema";
+import { registerModuleJobs } from "@/worker";
 
 export interface SeedUserOptions {
   email?: string;
@@ -86,6 +87,7 @@ export async function createTestApp(
   const container = createContainer(env);
   try {
     await migrateDatabase(container.db);
+    registerModuleJobs(container);
   }
   catch (err) {
     await container.close();
