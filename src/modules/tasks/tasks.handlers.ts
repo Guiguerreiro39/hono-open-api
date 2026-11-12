@@ -1,36 +1,58 @@
-import type { Task } from "./tasks.repository";
 import type {
   createTaskRoute,
   deleteTaskRoute,
   getTaskRoute,
   listTasksRoute,
+  liveTasksRoute,
   patchTaskRoute,
 } from "./tasks.routes";
-import type { TaskDto } from "./tasks.schema";
 import type { TasksService } from "./tasks.service";
-import type { AppRouteHandler } from "@/core/types";
+import type { SseConnectionTracker } from "@/core/realtime/sse";
+import type { AppRouteHandler, PlatformDeps } from "@/core/types";
+import { createLiveQueryStream } from "@/core/realtime/sse";
+import { formatTaskDto } from "./tasks.service";
 
-function formatTask(task: Task): TaskDto {
-  return {
-    id: task.id,
-    name: task.name,
-    done: task.done,
-    userId: task.userId,
-    createdAt: task.createdAt.toISOString(),
-    updatedAt: task.updatedAt.toISOString(),
-  };
+export interface TasksHandlersDeps {
+  pubsub: PlatformDeps["pubsub"];
+  metrics: PlatformDeps["metrics"];
+  logger: PlatformDeps["logger"];
+  shutdownSignal: PlatformDeps["shutdownSignal"];
+  sseConnections?: SseConnectionTracker;
 }
 
-export function createTasksHandlers(service: TasksService) {
+export function createTasksHandlers(service: TasksService, deps: TasksHandlersDeps) {
   const listTasks: AppRouteHandler<typeof listTasksRoute> = async (c) => {
     const user = c.get("user");
     const query = c.req.valid("query");
     const result = await service.listTasks(user, query);
 
     return c.json({
-      data: result.data.map(formatTask),
+      data: result.data.map(formatTaskDto),
       meta: result.meta,
     }, 200);
+  };
+
+  const liveTasks: AppRouteHandler<typeof liveTasksRoute> = async (c) => {
+    const user = c.get("user");
+    const query = c.req.valid("query");
+    const topic = await service.resolveLiveTopic(user, query);
+
+    return createLiveQueryStream({
+      c,
+      pubsub: deps.pubsub,
+      topic,
+      metrics: deps.metrics,
+      logger: deps.logger,
+      shutdownSignal: deps.shutdownSignal,
+      connectionTracker: deps.sseConnections,
+      fetcher: async () => {
+        const result = await service.listTasks(user, query);
+        return {
+          data: result.data.map(formatTaskDto),
+          meta: result.meta,
+        };
+      },
+    });
   };
 
   const createTask: AppRouteHandler<typeof createTaskRoute> = async (c) => {
@@ -38,7 +60,7 @@ export function createTasksHandlers(service: TasksService) {
     const body = c.req.valid("json");
     const created = await service.createTask(user, body);
 
-    return c.json(formatTask(created), 201);
+    return c.json(formatTaskDto(created), 201);
   };
 
   const getTask: AppRouteHandler<typeof getTaskRoute> = async (c) => {
@@ -46,7 +68,7 @@ export function createTasksHandlers(service: TasksService) {
     const { id } = c.req.valid("param");
     const task = await service.getTaskById(user, id);
 
-    return c.json(formatTask(task), 200);
+    return c.json(formatTaskDto(task), 200);
   };
 
   const patchTask: AppRouteHandler<typeof patchTaskRoute> = async (c) => {
@@ -55,7 +77,7 @@ export function createTasksHandlers(service: TasksService) {
     const body = c.req.valid("json");
     const updated = await service.updateTask(user, id, body);
 
-    return c.json(formatTask(updated), 200);
+    return c.json(formatTaskDto(updated), 200);
   };
 
   const deleteTask: AppRouteHandler<typeof deleteTaskRoute> = async (c) => {
@@ -68,6 +90,7 @@ export function createTasksHandlers(service: TasksService) {
 
   return {
     listTasks,
+    liveTasks,
     createTask,
     getTask,
     patchTask,
