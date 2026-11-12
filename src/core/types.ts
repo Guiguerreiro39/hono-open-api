@@ -24,8 +24,8 @@ export interface PlatformDeps {
   storage: StoragePort;
   checkDb: () => Promise<void>;
   checkRedis?: () => Promise<void>;
-  isShuttingDown: () => boolean;
-  shutdownSignal: AbortSignal;
+  isShuttingDown?: () => boolean;
+  shutdownSignal?: AbortSignal;
 }
 
 export interface AppBindings {

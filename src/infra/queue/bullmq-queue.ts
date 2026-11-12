@@ -74,6 +74,8 @@ export class BullMQQueueAdapter implements QueuePort {
   private workerHandle?: RedisClientHandle;
   private worker?: Worker;
   private closed = false;
+  private forced = false;
+  private workerClosePromise: Promise<void> | null = null;
   private closePromise: Promise<void> | null = null;
 
   constructor(options: BullMQQueueAdapterOptions) {
@@ -412,18 +414,39 @@ export class BullMQQueueAdapter implements QueuePort {
     }
   }
 
+  closeWorker(): Promise<void> {
+    if (this.workerClosePromise) {
+      return this.workerClosePromise;
+    }
+    this.workerClosePromise = this.closeWorkerGracefully().then(async () => {
+      await this.workerHandle?.quit();
+    });
+    return this.workerClosePromise;
+  }
+
+  forceClose(): void {
+    this.closed = true;
+    this.forced = true;
+    if (this.worker) {
+      void this.worker.close(true).catch(() => {});
+    }
+    this.workerHandle?.client.disconnect();
+    this.producerHandle.client.disconnect();
+  }
+
   async close(): Promise<void> {
     if (this.closePromise) {
       return this.closePromise;
     }
     this.closed = true;
     this.closePromise = (async () => {
-      await this.closeWorkerGracefully();
+      if (!this.forced) {
+        await this.closeWorker();
+      }
       if (this.producerHandle.client.status !== "ready") {
         await this.producerHandle.quit();
       }
       await this.queue.close().catch(() => {});
-      await this.workerHandle?.quit();
       await this.producerHandle.quit();
     })();
     return this.closePromise;

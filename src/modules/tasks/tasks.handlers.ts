@@ -16,7 +16,7 @@ export interface TasksHandlersDeps {
   pubsub: PlatformDeps["pubsub"];
   metrics: PlatformDeps["metrics"];
   logger: PlatformDeps["logger"];
-  shutdownSignal: PlatformDeps["shutdownSignal"];
+  shutdownSignal?: PlatformDeps["shutdownSignal"];
   sseConnections?: SseConnectionTracker;
 }
 

@@ -322,10 +322,25 @@ export class MemoryQueueAdapter implements QueuePort {
     this.schedules.clear();
   }
 
-  async close(): Promise<void> {
+  private async waitForDrain(): Promise<void> {
     if (this.drainingPromise) {
       await this.drainingPromise;
     }
+  }
+
+  async closeWorker(): Promise<void> {
+    await this.waitForDrain();
+  }
+
+  forceClose(): void {
+    this.closed = true;
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    await this.waitForDrain();
     this.closed = true;
   }
 }

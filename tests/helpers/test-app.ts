@@ -97,9 +97,12 @@ export async function createTestApp(
     throw err;
   }
 
+  const defaultShutdownController = new AbortController();
   const deps: Parameters<typeof createApp>[0] = {
     ...container,
     ...depsOverrides,
+    isShuttingDown: depsOverrides?.isShuttingDown ?? container.isShuttingDown ?? (() => false),
+    shutdownSignal: depsOverrides?.shutdownSignal ?? container.shutdownSignal ?? defaultShutdownController.signal,
   };
 
   const app = createApp(deps);

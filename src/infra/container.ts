@@ -1,5 +1,8 @@
 import type { Client } from "@libsql/client";
+import type { Logger } from "pino";
 
+import type { PubSubPort } from "@/core/ports/pubsub";
+import type { QueuePort } from "@/core/ports/queue";
 import type { PlatformDeps } from "@/core/types";
 import type { Env } from "@/env";
 import type { AppAuth } from "@/infra/auth";
@@ -26,11 +29,35 @@ export interface Container extends PlatformDeps {
   client: Client;
   betterAuth: AppAuth;
   taskRepository: TaskRepository;
+  isShuttingDown: () => boolean;
+  shutdownSignal: AbortSignal;
+  markShuttingDown: () => void;
+  abortShutdown: () => void;
+  forceDisconnect: () => void;
   close: () => Promise<void>;
 }
 
 export interface CreateContainerOptions {
   worker?: boolean;
+}
+
+export interface ContainerCloseStep {
+  name: string;
+  close: () => Promise<void> | void;
+}
+
+export async function executeCloseSteps(
+  steps: readonly ContainerCloseStep[],
+  logger: Pick<Logger, "warn">,
+): Promise<void> {
+  for (const step of steps) {
+    try {
+      await step.close();
+    }
+    catch (err) {
+      logger.warn({ err, step: step.name }, "Container teardown step failed");
+    }
+  }
 }
 
 export function createContainer(env: Env, options?: CreateContainerOptions): Container {
@@ -41,6 +68,8 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
   const { port: storage, close: closeStorage } = createStorageAdapter(env);
   const taskRepository = createDrizzleTaskRepository(db);
   const shutdownController = new AbortController();
+  let shuttingDown = false;
+  let closePromise: Promise<void> | null = null;
   const workerEnabled = options?.worker ?? env.WORKER_EMBEDDED;
 
   const redisHandle = env.REDIS_URL
@@ -73,7 +102,7 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
       })
     : new MemoryRateLimiterAdapter({ metrics });
 
-  const queue = env.REDIS_URL
+  const queue: QueuePort = env.REDIS_URL
     ? new BullMQQueueAdapter({
         redisUrl: env.REDIS_URL,
         prefix: env.CACHE_PREFIX,
@@ -89,7 +118,7 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
         metrics,
       });
 
-  const pubsub = redisHandle
+  const pubsub: PubSubPort = redisHandle
     ? new RedisPubSubAdapter({
         pub: redisHandle.client,
         ping: redisHandle.ping,
@@ -97,6 +126,24 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
         logger,
       })
     : new MemoryPubSubAdapter({ logger });
+
+  const markShuttingDown = () => {
+    shuttingDown = true;
+  };
+
+  const abortShutdown = () => {
+    shuttingDown = true;
+    if (!shutdownController.signal.aborted) {
+      shutdownController.abort();
+    }
+  };
+
+  const forceDisconnect = () => {
+    abortShutdown();
+    queue.forceClose?.();
+    pubsub.forceDisconnect?.();
+    redisHandle?.client.disconnect();
+  };
 
   return {
     env,
@@ -114,20 +161,28 @@ export function createContainer(env: Env, options?: CreateContainerOptions): Con
     taskRepository,
     checkDb: ping,
     checkRedis: redisHandle?.ping,
-    isShuttingDown: () => shutdownController.signal.aborted,
+    isShuttingDown: () => shuttingDown || shutdownController.signal.aborted,
     shutdownSignal: shutdownController.signal,
-    close: async () => {
-      if (!shutdownController.signal.aborted) {
-        shutdownController.abort();
+    markShuttingDown,
+    abortShutdown,
+    forceDisconnect,
+    close: () => {
+      if (closePromise) {
+        return closePromise;
       }
-      await queue.close();
-      await pubsub.close();
-      await rateLimiter.close();
-      if (redisHandle) {
-        await redisHandle.quit();
-      }
-      await closeStorage();
-      await closeDb();
+
+      abortShutdown();
+      const steps: ContainerCloseStep[] = [
+        { name: "queue", close: () => queue.close() },
+        { name: "pubsub", close: () => pubsub.close() },
+        { name: "rateLimiter", close: () => rateLimiter.close() },
+        ...(redisHandle ? [{ name: "redis", close: () => redisHandle.quit() }] : []),
+        { name: "storage", close: () => closeStorage() },
+        { name: "db", close: () => closeDb() },
+      ];
+
+      closePromise = executeCloseSteps(steps, logger);
+      return closePromise;
     },
   };
 }

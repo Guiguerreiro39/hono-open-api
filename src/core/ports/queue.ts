@@ -256,6 +256,8 @@ export interface QueuePort {
   removeSchedule: (schedulerId: string) => Promise<boolean>;
   ping: () => Promise<void>;
   close: () => Promise<void>;
+  closeWorker?: () => Promise<void>;
+  forceClose?: () => void;
   drain?: () => Promise<void>;
   isWorkerRunning?: () => boolean;
 }

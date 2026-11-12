@@ -16,4 +16,5 @@ export interface PubSubPort {
   ) => Promise<() => Promise<void>>;
   ping?: () => Promise<void>;
   close: () => Promise<void>;
+  forceDisconnect?: () => void;
 }

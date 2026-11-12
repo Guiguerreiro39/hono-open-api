@@ -1,13 +1,17 @@
 import type { ServerType } from "@hono/node-server";
+import type { ProcessLifecycle, ProcessSignalTarget } from "@/core/lifecycle";
 import type { Env } from "@/env";
 import type { Container } from "@/infra/container";
-import { realpathSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { requestId } from "hono/request-id";
 
 import { createErrorHandler, notFoundHandler } from "@/core/errors";
 import { createRouter } from "@/core/http";
+import {
+  createProcessLifecycle,
+  drainWorkerQueue,
+  isDirectCliInvocation,
+} from "@/core/lifecycle";
 import { createMetricsEndpointHandler } from "@/core/observability/metrics";
 import { loadEnv } from "@/env";
 import { createContainer } from "@/infra/container";
@@ -140,8 +144,15 @@ async function closeHttpServer(server: ServerType | undefined): Promise<void> {
   });
 }
 
-export async function createWorkerRuntime(env: Env): Promise<WorkerRuntime> {
-  const container = createContainer(env, { worker: true });
+export interface CreateWorkerRuntimeOptions {
+  container?: Container;
+}
+
+export async function createWorkerRuntime(
+  env: Env,
+  options?: CreateWorkerRuntimeOptions,
+): Promise<WorkerRuntime> {
+  const container = options?.container ?? createContainer(env, { worker: true });
   let metricsApp: ReturnType<typeof createWorkerObservabilityApp> | undefined;
   let metricsServer: ServerType | undefined;
   let metricsPort: number | undefined;
@@ -170,8 +181,14 @@ export async function createWorkerRuntime(env: Env): Promise<WorkerRuntime> {
       return closePromise;
     }
     closePromise = (async () => {
-      await container.close();
+      container.markShuttingDown();
+      await drainWorkerQueue(
+        container.queue,
+        env.WORKER_SHUTDOWN_TIMEOUT_MS,
+        container.logger,
+      );
       await closeHttpServer(metricsServer);
+      await container.close();
     })();
     return closePromise;
   };
@@ -185,58 +202,79 @@ export async function createWorkerRuntime(env: Env): Promise<WorkerRuntime> {
   };
 }
 
-function isDirectCliInvocation(): boolean {
-  const entrypoint = process.argv[1];
-  if (!entrypoint) {
-    return false;
-  }
+export interface RunWorkerProcessOptions {
+  env?: Env;
+  container?: Container;
+  processTarget?: ProcessSignalTarget;
+}
+
+export interface WorkerProcessRuntime extends WorkerRuntime {
+  lifecycle: ProcessLifecycle;
+}
+
+export async function runWorkerProcess(
+  options?: RunWorkerProcessOptions,
+): Promise<WorkerProcessRuntime> {
+  const env = options?.env ?? loadEnv();
+  const container = options?.container ?? createContainer(env, { worker: true });
+  let runtime: WorkerRuntime | undefined;
+
+  const lifecycle = createProcessLifecycle({
+    name: "worker",
+    logger: container.logger,
+    shutdownTimeoutMs: env.SHUTDOWN_TIMEOUT_MS,
+    onShutdown: async () => {
+      if (runtime) {
+        await runtime.close();
+      }
+      else {
+        container.markShuttingDown();
+        await container.close();
+      }
+    },
+    onTimeout: () => {
+      if (
+        runtime?.metricsServer
+        && "closeAllConnections" in runtime.metricsServer
+        && typeof runtime.metricsServer.closeAllConnections === "function"
+      ) {
+        runtime.metricsServer.closeAllConnections();
+      }
+      container.forceDisconnect();
+    },
+    onFatalCleanup: async () => {
+      if (runtime) {
+        await runtime.close();
+      }
+      else {
+        await container.close();
+      }
+    },
+    processTarget: options?.processTarget,
+  });
+
   try {
-    return pathToFileURL(realpathSync(entrypoint)).href === import.meta.url;
+    runtime = await createWorkerRuntime(env, { container });
+    container.logger.info(
+      {
+        env: env.NODE_ENV,
+        concurrency: env.WORKER_CONCURRENCY,
+        metricsPort: runtime.metricsPort,
+      },
+      "Worker started",
+    );
+
+    return {
+      ...runtime,
+      lifecycle,
+    };
   }
-  catch {
-    return false;
+  catch (err) {
+    await lifecycle.handleStartupError(err);
+    throw err;
   }
 }
 
-if (isDirectCliInvocation()) {
-  const env = loadEnv();
-  const runtime = await createWorkerRuntime(env);
-
-  runtime.container.logger.info(
-    {
-      env: env.NODE_ENV,
-      concurrency: env.WORKER_CONCURRENCY,
-      metricsPort: runtime.metricsPort,
-    },
-    "Worker started",
-  );
-
-  let shuttingDown = false;
-  const shutdown = async (signal: string) => {
-    if (shuttingDown) {
-      runtime.container.logger.warn({ signal }, "Second signal received; forcing worker exit");
-      process.exit(1);
-    }
-    shuttingDown = true;
-    runtime.container.logger.info({ signal }, "Worker shutting down");
-
-    const forceTimer = setTimeout(() => {
-      runtime.container.logger.error("Worker shutdown timed out; forcing exit");
-      process.exit(1);
-    }, env.WORKER_SHUTDOWN_TIMEOUT_MS + 1000);
-    forceTimer.unref();
-
-    try {
-      await runtime.close();
-      clearTimeout(forceTimer);
-      process.exit(0);
-    }
-    catch (err) {
-      runtime.container.logger.error({ err }, "Worker shutdown failed");
-      process.exit(1);
-    }
-  };
-
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+if (isDirectCliInvocation(import.meta.url)) {
+  await runWorkerProcess().catch(() => {});
 }
