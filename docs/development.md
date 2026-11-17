@@ -1,6 +1,6 @@
 # Development guide
 
-Onboarding workflows, Drizzle and PostgreSQL migrations, new `Feature Module` checklist, testing commands, SSE client recipes, and environment variable reference for `hono-open-api-starter`.
+Onboarding workflows, Drizzle and PostgreSQL migrations, new `Feature Module` checklist, testing commands, SSE client recipes, environment variable reference, and the Release workflow for `hono-open-api-starter`.
 
 ## Tooling setup
 
@@ -363,3 +363,46 @@ All 36 environment variables validated by `EnvSchema` in [src/env.ts](../src/env
 | `S3_ACCESS_KEY_ID`                    | Non-empty string            | Unset                                                                | Optional static key (must pair with `S3_SECRET_ACCESS_KEY`; omit for IAM/IRSA) |
 | `S3_SECRET_ACCESS_KEY`                | Non-empty string            | Unset                                                                | Optional static secret (must pair with `S3_ACCESS_KEY_ID`)                     |
 | `S3_FORCE_PATH_STYLE`                 | Boolean                     | `false`                                                              | Enables path-style S3 addressing for RustFS/MinIO                              |
+
+## Releases and git governance (ADR-0013)
+
+A **Release** is a published semver of this template: the version, its notes, and one container image. A **Release PR** proposes the next Release and waits for a human to merge it.
+
+### Commits and local hooks
+
+[Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/) apply locally and on pull request titles. `pnpm install` runs the `prepare` script, which installs Lefthook when `.git` is present.
+
+- `pre-commit` runs `eslint --fix` on staged JS and TS files and re-stages the fixes.
+- `commit-msg` runs Commitlint (`commitlint.config.mjs`). Types are `feat`, `fix`, `perf`, `refactor`, `docs`, `style`, `test`, `build`, `ci`, `chore`, and `revert`. The subject starts with a lowercase letter. The header is at most 100 characters.
+- `pre-push` runs `scripts/check-branch-push.sh`, which blocks a direct push to `main` or `master`.
+
+Repository admins can bypass the local push guard:
+
+```bash
+ALLOW_DIRECT_MAIN_PUSH=1 git push
+```
+
+### Pull request titles
+
+`.github/workflows/pr-title.yml` checks the same types and lowercase subject. Squash-merge so the pull request title is the commit that lands on `master`. That commit is what the next Release reads. `feat` bumps the minor, `fix` bumps the patch, and a breaking change bumps the major. Other types show up as notes on a Release that one of those commits already opened. `chore` stays out of `CHANGELOG.md`.
+
+### Default-branch ruleset
+
+`docs/github-ruleset.json` targets the repository default branch. It blocks deletion and force-pushes, requires a pull request with zero approving reviews and resolved review threads, and requires the `verify`, `integration`, `docker`, and `Lint PR Title (Conventional Commits)` checks. Repository admins can bypass it. The ruleset does not lock the merge method.
+
+Apply it with the GitHub CLI authenticated (`gh auth login`):
+
+```bash
+pnpm setup:ruleset --dry-run
+pnpm setup:ruleset
+```
+
+### Release-Please
+
+A push to `master` or `main` runs `.github/workflows/release.yml`. Release-Please opens or updates one Release PR, titled `chore(master): release X.Y.Z` while the default branch is `master`. The manifest in `.release-please-manifest.json` starts at `1.0.0`, matching `package.json`.
+
+Merging the Release PR tags `vX.Y.Z`, opens the GitHub Release, and publishes one multi-arch image (`linux/amd64`, `linux/arm64`) to `ghcr.io/<owner>/<repo>` with tags `X.Y.Z`, `X.Y`, `latest`, and `sha-<short>`, plus SLSA build provenance. The CI `docker` job still only smoke-builds. The package is `"private": true`, so this pipeline does not publish to npm.
+
+### Renovate
+
+`renovate.json5` groups Hono, Drizzle, AWS SDK, and the lint and commit tools into `chore(deps)` pull requests, and automerges devDependency minor and patch updates when CI passes. Install the Renovate GitHub App on the repository before those settings take effect.

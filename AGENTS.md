@@ -40,5 +40,5 @@ Single-context layout (`GLOSSARY.md` + `docs/adr/` at repo root). See `docs/agen
 
 - `GLOSSARY.md`: consult when naming modules, ports, adapters, repositories, or test suites.
 - `docs/architecture.md`: consult when editing middlewares, `Container` lifecycle drains, `Port` to `Adapter` bindings, SSE, storage, or observability.
-- `docs/development.md`: consult when adding environment variables, running Drizzle or Compose workflows, writing SSE clients, or scaffolding a `Feature Module`.
-- `docs/adr/`: consult before changing architectural boundaries, HTTP conventions, DB portability, auth, Redis, queues, observability, SSE, storage, shutdown, testing, or CI/Docker (`ADR-0001` through `ADR-0012`).
+- `docs/development.md`: consult when adding environment variables, running Drizzle or Compose workflows, writing SSE clients, scaffolding a `Feature Module`, or cutting a Release.
+- `docs/adr/`: consult before changing architectural boundaries, HTTP conventions, DB portability, auth, Redis, queues, observability, SSE, storage, shutdown, testing, CI/Docker, or the Release pipeline (`ADR-0001` through `ADR-0013`).

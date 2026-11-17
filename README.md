@@ -74,6 +74,6 @@ This starts `redis`, RustFS `s3` (console on `http://localhost:9001`), `s3-init`
 ## Documentation
 
 - [Architecture](./docs/architecture.md): system map, layer rules, middleware pipeline, lifecycle drain, and `Port` to `Adapter` matrix
-- [Development](./docs/development.md): local dev modes, Drizzle and PostgreSQL migration workflow, new module checklist, SSE client recipes, and env var reference
+- [Development](./docs/development.md): local dev modes, Drizzle and PostgreSQL migration workflow, new module checklist, SSE client recipes, env var reference, and Releases
 - [Glossary](./GLOSSARY.md): canonical project vocabulary
-- [Architecture Decision Records](./docs/adr/): `ADR-0001` through `ADR-0012`
+- [Architecture Decision Records](./docs/adr/): `ADR-0001` through `ADR-0013`

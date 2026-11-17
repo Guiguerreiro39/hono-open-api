@@ -1,0 +1,48 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":separateMultipleMajorReleases"
+  ],
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "timezone": "UTC",
+  "schedule": ["before 4am on monday"],
+  "prConcurrentLimit": 5,
+  "packageRules": [
+    {
+      "description": "Group Hono ecosystem dependencies",
+      "matchPackagePatterns": ["^hono$", "^@hono/", "^hono-pino$", "^hono-rate-limiter$"],
+      "groupName": "hono ecosystem"
+    },
+    {
+      "description": "Group Drizzle ecosystem dependencies",
+      "matchPackagePatterns": ["^drizzle-orm$", "^drizzle-kit$"],
+      "groupName": "drizzle ecosystem"
+    },
+    {
+      "description": "Group AWS SDK dependencies",
+      "matchPackagePatterns": ["^@aws-sdk/"],
+      "groupName": "aws sdk"
+    },
+    {
+      "description": "Group lint and commit tools",
+      "matchPackagePatterns": [
+        "^eslint$",
+        "^@antfu/eslint-config$",
+        "^eslint-plugin-format$",
+        "^lefthook$",
+        "^@commitlint/"
+      ],
+      "groupName": "lint and commit tools"
+    },
+    {
+      "description": "Automerge minor and patch updates for devDependencies if CI passes",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeType": "branch"
+    }
+  ]
+}
