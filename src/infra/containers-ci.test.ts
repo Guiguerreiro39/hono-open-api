@@ -15,8 +15,12 @@ describe("package metadata", () => {
       scripts?: Record<string, string>;
     };
 
+    const manifest = JSON.parse(
+      readFileSync(path.join(REPO_ROOT, ".release-please-manifest.json"), "utf8"),
+    ) as { ".": string };
+
     expect(pkg.private).toBe(true);
-    expect(pkg.version).toBe("1.0.0");
+    expect(pkg.version).toBe(manifest["."]);
     expect(pkg.packageManager).toBe("pnpm@10.19.0");
     expect(pkg.engines).toEqual({ node: ">=24" });
     expect(pkg.scripts?.prepare).toContain("lefthook install");
