@@ -1,6 +1,6 @@
 # Architecture
 
-This document maps the runtime structure of `hono-open-api-starter` to its source modules and Architecture Decision Records (`ADR-0001` through `ADR-0012`). Consult [docs/adr/](./adr/) for decision rationale and [GLOSSARY.md](../GLOSSARY.md) for canonical terms.
+This document maps the runtime structure of `hono-open-api-starter` to its source modules and Architecture Decision Records (`ADR-0001` through `ADR-0013`). Consult [docs/adr/](./adr/) for decision rationale and [GLOSSARY.md](../GLOSSARY.md) for canonical terms.
 
 ## Three-layer dependency rule
 

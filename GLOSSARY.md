@@ -39,3 +39,11 @@ _Avoid_: Registry, Singleton, PlatformDeps
 **Contract Suite**:
 A parameterized Vitest factory under `tests/contracts/` that verifies behavioral parity across every `Adapter` (in-memory/local in `unit`, real driver in `integration`) or repository implementing a `Port`.
 _Avoid_: Mock suite, adapter unit test
+
+**Release**:
+A published semver of this application template, covering that version, its notes, and the container image built for it.
+_Avoid_: Deploy, build, npm publish
+
+**Release PR**:
+The pull request that proposes the next Release and waits for a human to merge it.
+_Avoid_: Version bump, release commit, changeset
